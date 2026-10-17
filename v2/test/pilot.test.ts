@@ -1,0 +1,5 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {pilotStopReason} from '../src/pilot.js';
+const base={elapsedMs:0,maxMs:300000,states:[{ready:true,health:20},{ready:true,health:20}],budgetExhausted:false,noProgressMs:0,consecutiveFailures:0};
+test('pilot hard bounds time and budget',()=>{assert.equal(pilotStopReason(base),null);assert.equal(pilotStopReason({...base,elapsedMs:300000,maxMs:600000}),'time_limit');assert.equal(pilotStopReason({...base,budgetExhausted:true}),'budget_or_usage_limit');});
+test('pilot stops for either bot death, disconnect or low health',()=>{assert.equal(pilotStopReason({...base,states:[base.states[0],{ready:false,health:0}]}),'death');assert.equal(pilotStopReason({...base,states:[{ready:false,health:20}]}),'disconnected');assert.equal(pilotStopReason({...base,states:[{ready:true,health:6}]}),'low_health');});
+test('pilot stops repeated failures and prolonged no progress',()=>{assert.equal(pilotStopReason({...base,consecutiveFailures:4}),'repeated_failure');assert.equal(pilotStopReason({...base,noProgressMs:120000}),'no_progress');});

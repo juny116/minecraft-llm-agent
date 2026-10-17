@@ -1,5 +1,5 @@
 # 경험과 가이드라인
-runs/memory/experience/<profile hash>/에 memory.json, social.json, spatial.json을 저장합니다. namespace·모드·서버·버전·봇으로 분리됩니다. 실제 프로필/로그는 비공개입니다. 월드 초기화 시 namespace를 바꾸세요.
+runs/memory/experience/<profile hash>/에 memory.json, social.json, spatial.json, goals.json을 저장합니다. namespace·모드·서버·버전·봇으로 분리됩니다. 실제 프로필/로그는 비공개입니다. 월드 초기화 시 namespace를 바꾸세요.
 
 ## 경험 → 검토 → 검색
 1. 선택, 당시 관측, 실행 결과, 변화와 사용한 지침 버전을 episode로 저장합니다.
@@ -14,4 +14,4 @@ runs/memory/experience/<profile hash>/에 memory.json, social.json, spatial.json
 ## 저장·한계
 임시 파일·원자적 교체·잠금으로 기록합니다. 손상·프로필 불일치는 파일을 보존하고 오류 처리합니다. 전체 JSON 저장 방식이므로 장기 대규모 실행에는 압축/DB가 필요합니다. 저장 실패 시 로그를 확인하세요.
 
-사회적 기억은 SOCIAL.md, 장소 기억은 SPATIAL-MEMORY.md 참고. 다른 봇의 말은 출처 있는 보고이며 직접 확인한 사실과 구분합니다. 목표·현재 계획은 자동 복원하지 않습니다.
+사회적 기억은 SOCIAL.md, 장소 기억은 SPATIAL-MEMORY.md 참고. 다른 봇의 말은 출처 있는 보고이며 직접 확인한 사실과 구분합니다. 자율 목표는 별도 GOALS.md 규약으로 저장·재검토합니다. 경험 지침과 의도를 같은 문서로 합치지 않습니다. 현재 행동 단계는 자동 복원하지 않습니다.

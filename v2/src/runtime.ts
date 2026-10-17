@@ -1,10 +1,11 @@
+import {GoalBook} from './goals.js';
 import {readPickupResult} from './pickup.js';
 import {readMiningResult} from './mining.js';
 import type {SocialMemory} from './social.js';
 import type {ExperienceMemory} from './experience-memory.js';
 import { candidates, type Action, type Brain, type Decision, type Log, type Plan, type Snapshot, type World } from './types.js';
 import {Journal,compact,changes,classify,completed,type PlanningContext,type Outcome} from './planning.js';
-export type RuntimeOptions = { planMs: number; actionMs: number; minConfidence: number; selectorKind?: string; memory?:ExperienceMemory; social?:SocialMemory; reflectionEnabled?:boolean };
+export type RuntimeOptions = { planMs: number; actionMs: number; minConfidence: number; selectorKind?: string; memory?:ExperienceMemory; social?:SocialMemory; reflectionEnabled?:boolean; goals?:GoalBook };
 export class Runtime {
  plan:Plan={goal:'Observe before acting',preferred:'idle'};
  history:string[]=[];
@@ -59,11 +60,11 @@ export class Runtime {
   }catch{this.log('memory_reflection_error');}finally{this.reflectionPending=false;}
  }
  get userGoal(){return this.assignedGoal;}
- get planning():PlanningContext {return structuredClone({longTermGoal:this.longGoal,mediumTerm:this.medium,replanReasons:[...this.reasons],recentActions:this.journal.recent,olderSummary:this.journal.older,failureStreak:this.failureStreak});}
+ get planning():PlanningContext {return structuredClone({userRequest:this.assignedGoal,...(this.options.goals?{goalState:this.options.goals.snapshot()}:{}),longTermGoal:this.longGoal,mediumTerm:this.medium,replanReasons:[...this.reasons],recentActions:this.journal.recent,olderSummary:this.journal.older,failureStreak:this.failureStreak});}
  setGoal(goal:string|null){
   if(this.closed)return;const next=goal?.trim()||null;if(next===this.assignedGoal)return;
-  this.assignedGoal=next;this.longGoal=next;this.medium={summary:'Observe and replan',steps:[],activeStep:0};
-  this.plan={goal:'Observe and replan',preferred:'idle'};this.planVersion++;this.failureStreak=0;this.failureKey='';this.retryAfter=0;
+  this.assignedGoal=next;this.options.goals?.pause('operator request changed; re-evaluate intention');this.longGoal=this.options.goals?null:next;this.medium={summary:'Observe and replan',steps:[],activeStep:0};
+  this.plan={goal:'Observe and replan',preferred:'idle',userRequest:next};this.planVersion++;this.failureStreak=0;this.failureKey='';this.retryAfter=0;
   this.invalidate('user goal changed');this.log('user_goal',{userGoal:next});
  }
  note(result:string){this.history=[...this.history,result].slice(-20);this.log('result',{result});}
@@ -84,18 +85,26 @@ export class Runtime {
   if(this.closed||this.planPending||this.actionPending||now<this.retryAfter||(!this.reasons.size&&now-this.lastPlan<this.options.planMs))return;
   const s=this.observation();if(!s.ready||s.health<=0)return;
   if(!this.reasons.size)this.reasons.add('periodic_review');
-  const context=this.planning;const dispatched=[...this.reasons];this.reasons.clear();
+  const context=this.planning;if(this.options.goals)context.goalReview=this.options.goals.review(s,this.userGoal);const dispatched=[...this.reasons];this.reasons.clear();
   this.planPending=true;this.lastPlan=now;
   const epoch=this.epoch,evidence=this.evidenceVersion,version=this.planVersion;
   return this.brain.plan(s,[...this.history],this.lifetime.signal,this.userGoal,context).then(p=>{
    if(this.closed||epoch!==this.epoch||evidence!==this.evidenceVersion||version!==this.planVersion||this.actionPending){
     if(!this.closed)this.requestPlan('stale_plan_needs_fresh_evidence');this.log('plan_discarded');return;
    }
-   const proposed=p.longTermGoal??this.longGoal??p.goal;
-   if(this.assignedGoal!==null)this.longGoal=this.assignedGoal;
-   else if(this.longGoal===null||proposed===this.longGoal||p.goalRevisionReason?.trim())this.longGoal=proposed;
-   else this.log('long_goal_change_rejected',{reason:'missing revision justification'});
-   this.plan={...p,longTermGoal:this.longGoal??undefined};this.planVersion++;this.failureStreak=0;this.failureKey='';
+   if(this.options.goals){
+    if(!context.goalReview||!Array.isArray(p.goalUpdates)||p.activeGoalId===undefined)throw Error('Missing goal review response');
+    if(p.activeGoalId===null&&(p.preferred!=='idle'||p.steps?.length))throw Error('Invalid work without active goal');
+    this.options.goals.apply(context.goalReview,p.goalUpdates,p.activeGoalId);
+    this.longGoal=this.options.goals.snapshot().activeGoal?.description??null;
+    this.log('goals_reviewed',{goals:this.options.goals.snapshot()});
+   }else{
+    const proposed=p.longTermGoal??this.longGoal??p.goal;
+    if(this.assignedGoal!==null)this.longGoal=this.assignedGoal;
+    else if(this.longGoal===null||proposed===this.longGoal||p.goalRevisionReason?.trim())this.longGoal=proposed;
+    else this.log('long_goal_change_rejected',{reason:'missing revision justification'});
+   }
+   this.plan={...p,userRequest:this.assignedGoal,longTermGoal:this.longGoal??undefined};this.planVersion++;this.failureStreak=0;this.failureKey='';
    this.medium={summary:p.goal,steps:structuredClone(p.steps??[]),activeStep:0};
    if(this.medium.steps.length)this.activateStep();
    this.log('plan',{plan:this.plan,planning:this.planning,reasons:dispatched});
@@ -111,7 +120,11 @@ export class Runtime {
   if(this.closed)return;const s=this.observation();
   if((this.activeAction==='flee'||this.activeAction==='attack')&&s.ready&&s.health>0)return;
   const messages=s.messages.join('\n');
-  if(s.ready!==this.lastReady){this.lastReady=s.ready;this.invalidate('connection changed');}
+  if(s.ready!==this.lastReady){
+   this.lastReady=s.ready;
+   if(this.options.goals){this.options.goals.pause('connection changed; inspect current state before resuming');this.longGoal=null;this.medium={summary:'Review intentions against current observations',steps:[],activeStep:0};this.plan={goal:'Review intentions before acting',preferred:'idle'};this.planVersion++;this.requestPlan('goal_review_after_connection');}
+   this.invalidate('connection changed');
+  }
   if(messages!==this.lastMessages){this.lastMessages=messages;this.epoch++;this.requestPlan('new conversation');}
   const enemyKey=(s.enemies??[]).map(e=>e.id).sort((a,b)=>a-b).join(',');
   if(enemyKey!==this.lastEnemies){this.lastEnemies=enemyKey;this.invalidate('visible threats changed');}
@@ -125,15 +138,17 @@ export class Runtime {
    await this.run({action:'eat',confidence:1},['eat'],'local_safety');return;
   }
   if(this.actionPending||this.decisionPending)return;
+  if(this.options.goals?.needsReview&&!s.enemies?.length)return;
   // Wait at a blocked/completed plan boundary, but never block threat decisions.
   if(this.options.social&&this.planPending&&!s.enemies?.length)return;
   if(this.planPending&&!s.enemies?.length&&(this.failureStreak>=2||(this.medium.steps.length>0&&this.medium.activeStep>=this.medium.steps.length)))return;
   const idleKey=JSON.stringify({epoch:this.epoch,version:this.planVersion,health:s.health,food:s.food,inventory:s.inventory,enemies:s.enemies,items:s.visibleItems,position:s.position,players:s.nearbyPlayers,messages:s.messages,view:s.vision?{yaw:s.vision.yaw,pitch:s.vision.pitch,blocks:s.vision.blocks.map(b=>({name:b.name,position:b.position}))}:null});
   if(!s.enemies?.length&&this.lastIdle?.key===idleKey&&now-this.lastIdle.at<5000)return;
   this.decisionPending=true;const epoch=this.epoch,version=this.planVersion;
-  const options=candidates(s,this.plan),selectedContext=this.planning;
+  const options=this.options.goals&&!this.options.goals.snapshot().activeGoal&&!s.enemies?.length?['idle' as Action]:candidates(s,this.plan),selectedContext=this.planning;
   try{
-   const d=await this.brain.choose(s,this.plan,options,this.lifetime.signal);const fresh=this.world.snapshot();
+   const last=this.journal.recent.at(-1);
+   const d=await this.brain.choose(s,{...this.plan,userRequest:this.assignedGoal,recentOutcome:last?{action:last.decision.action,outcome:last.outcome,result:last.result,changes:last.changes}:undefined},options,this.lifetime.signal);const fresh=this.world.snapshot();
    if(this.closed||epoch!==this.epoch||version!==this.planVersion||!fresh.ready||fresh.health<=0
     ||(fresh.enemies??[]).map(e=>e.id).sort((a,b)=>a-b).join(',')!==enemyKey
     ||(!fresh.enemies?.length&&fresh.food<14&&fresh.canEat)||this.actionPending||!candidates(fresh,this.plan).includes(d.action)){
@@ -150,6 +165,7 @@ export class Runtime {
   const unlocked=after.recipeBook.unlocked.filter(id=>!before.recipeBook.unlocked.includes(id));
   const record=this.journal.add({...(decision.action==='pickup'&&readPickupResult(result)?{pickup:readPickupResult(result)}:{}),...(decision.action==='mine'&&readMiningResult(result)?{mining:readMiningResult(result)}:{}),decision,decisionObserved:compact(decisionObserved),selectorKind:source==='local_safety'?'local_rule':this.options.selectorKind??'unspecified_selector',options,source,planVersion:version,goal:context.longTermGoal,stepId:context.mediumTerm.steps[context.mediumTerm.activeStep]?.id??null,before:a,after:b,changes:{...changes(a,b),newlyUnlocked:unlocked.slice(0,128),newlyUnlockedCount:unlocked.length},outcome,result,startedAt,endedAt:Date.now()});
   if(outcome!=='skipped'&&(!(decision.action==='idle'||decision.action==='look')||JSON.stringify(a)!==JSON.stringify(b)))this.evidenceVersion++;
+  try{this.options.goals?.record(record);}catch{this.log('goal_evidence_write_error');}
   try{this.options.memory?.add(record,(decisionObserved.memoryGuidance??[]).map(g=>({id:g.id,version:g.version})));}catch{this.log('memory_write_error');}
   try{this.options.social?.recordAction(record);}catch{this.log('social_memory_write_error');}
   this.log('action_record',{record});

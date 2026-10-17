@@ -27,7 +27,7 @@ test('bots and observation copies have independent recipe books',()=>{
  assert.deepEqual(bob.snapshot().unlocked,[]);
 });
 
-test('both planner and JEV requests include only the observed unlocked recipe IDs',async()=>{
+test('planner receives only unlocked recipes; fast selector receives no catalog',async()=>{
  const bodies:any[]=[];
  const transport=(async(_url:any,init:any)=>{
   const body=JSON.parse(init.body);bodies.push(body);
@@ -39,7 +39,8 @@ test('both planner and JEV requests include only the observed unlocked recipe ID
  world.state.recipeBook={initialized:true,unlocked:['minecraft:oak_planks']};
  const plan=await brain.plan(world.snapshot(),[],new AbortController().signal);
  await brain.choose(world.snapshot(),plan,['idle'],new AbortController().signal);
- for(const body of bodies){assert.ok(JSON.stringify(body).includes('minecraft:oak_planks'));assert.ok(!JSON.stringify(body).includes('minecraft:diamond_sword'));}
+ for(const body of bodies)assert.ok(!JSON.stringify(body).includes('minecraft:diamond_sword'));
+ assert.ok(JSON.stringify(bodies[0]).includes('minecraft:oak_planks'));assert.ok(!JSON.stringify(bodies[1]).includes('minecraft:oak_planks'));
  assert.deepEqual(JSON.parse(bodies[0].messages[1].content).state.recipeBook,world.state.recipeBook);
- assert.deepEqual(bodies[1].state.observation.recipeBook,world.state.recipeBook);
+ assert.equal(bodies[1].state.observation.recipeBook,undefined);
 });

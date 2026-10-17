@@ -1,3 +1,4 @@
+import {GoalBook} from './goals.js';
 import {SocialMemory} from './social.js';
 import {botMemoryLocation,openBotMemory} from './experience-memory.js';
 import { mkdirSync, appendFileSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
@@ -43,7 +44,7 @@ async function main() {
     const experience=openBotMemory(mode,name,c);
     const world: World = mode === '--mock' ? new MockWorld(shared)
       : new (await import('./mineflayer.js')).MineflayerWorld(name, c, log);
-    const runtime = new Runtime(world, brain, { planMs: c.planMs, actionMs: c.actionMs, minConfidence: c.minConfidence, social:new SocialMemory(name,join(botMemoryLocation(mode,name,c).dir,'social.json')),memory:experience,selectorKind:mode==='--mock'?'mock':c.mode }, log);
+    const runtime = new Runtime(world, brain, { planMs: c.planMs, actionMs: c.actionMs, minConfidence: c.minConfidence, goals:new GoalBook(join(botMemoryLocation(mode,name,c).dir,'goals.json'),botMemoryLocation(mode,name,c).profile), social:new SocialMemory(name,join(botMemoryLocation(mode,name,c).dir,'social.json')),memory:experience,selectorKind:mode==='--mock'?'mock':c.mode }, log);
     const memory = join('runs/memory', `${mode.slice(2)}-${name}.json`);
     if (existsSync(memory)) {
       try { const old = JSON.parse(readFileSync(memory, 'utf8')); runtime.history = Array.isArray(old) ? old.filter(x => typeof x === 'string').slice(-20) : []; }
