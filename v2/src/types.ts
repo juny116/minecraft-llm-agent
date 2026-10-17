@@ -37,7 +37,7 @@ export interface World {
 export type Log = (event: string, fields?: Record<string, unknown>) => void;
 export type Decision = { action: Action; confidence: number };
 export interface Brain {
-  communicate?(state:Snapshot,plan:Plan,signal:AbortSignal):Promise<import('./social.js').Speech|null>;
+  communicate?(state:Snapshot,plan:Plan,signal:AbortSignal,execution?:{activeAction:Action|null;planPending:boolean}):Promise<import('./social.js').Speech|null>;
   readonly reflectionModel?:string;
   reflect?(input:import('./experience-memory.js').Reflection,signal:AbortSignal):Promise<unknown>;
   plan(state: Snapshot, history: string[], signal: AbortSignal, userGoal?: string | null, context?: import('./planning.js').PlanningContext): Promise<Plan>;

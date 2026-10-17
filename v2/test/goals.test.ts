@@ -76,3 +76,9 @@ test('accounting drain closes gameplay without aborting pending model usage or a
  const brain:Brain={plan:async(_s,_h,s,_u,c)=>{signal=s;review=c!.goalReview!;return new Promise<Plan>(r=>resolve=r);},choose:async()=>({action:'idle',confidence:1})};
  const r=new Runtime(w,brain,{...opts,goals},()=>{});const pending=r.refreshPlan();r.close(true);assert.equal(w.state.ready,false);assert.equal(signal.aborted,false);resolve(response(review));await pending;assert.equal(goals.snapshot().goals.length,0);
 });
+
+test('invalid goal updates return feedback with fresh evidence on a bounded retry',async()=>{
+ const g=new GoalBook(),w=new MockWorld();let calls=0,old='';const seen:any[]=[];
+ const brain:Brain={plan:async(_s,_h,_sig,_u,c)=>{seen.push(c);calls++;if(calls===1){old=c!.goalReview!.observationId;const p=response(c!.goalReview!);p.goalUpdates![0].evidenceIds=['old-id'];return p;}return response(c!.goalReview!);},choose:async()=>({action:'idle',confidence:1})};
+ const r=new Runtime(w,brain,{...opts,goals:g},()=>{});await r.refreshPlan();assert.equal(g.snapshot().goals.length,0);await r.refreshPlan(Date.now()+1100);assert.equal(calls,2);assert.match(seen[1].plannerFeedback,/evidence/);assert.notEqual(seen[1].goalReview.observationId,old);assert.equal(g.snapshot().activeGoal?.id,'food');assert.equal(r.planning.plannerFeedback,undefined);r.close();
+});

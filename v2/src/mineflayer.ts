@@ -1,3 +1,4 @@
+import {observedMovements} from './navigation.js';
 import {SpatialMemory} from './spatial-memory.js';
 import {botMemoryLocation} from './experience-memory.js';
 import {join} from 'node:path';
@@ -9,7 +10,7 @@ import {randomUUID} from 'node:crypto';
 import {IncomingDamage} from './incoming-damage.js';
 import {CombatEvidenceStore} from './combat-evidence.js';
 import { combat, hostileKinds, distance, type Enemy, type Encounter } from './combat.js';
-import { PlaceMemory, sampleView, summarizePlaces, viewDirection, VISION } from './vision.js';
+import { PlaceMemory, sampleView, summarizePlaces, viewDirection, visibleBlockFace, VISION } from './vision.js';
 import { RecipeBook } from "./recipe-book.js";
 import { protocolOverrides } from "./protocol.js";
 import mineflayer from 'mineflayer';
@@ -18,7 +19,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { Config } from './config.js';
 import type { Action, Log, Snapshot, World, Plan } from './types.js';
 
-const { pathfinder, Movements, goals } = pathfinderPackage;
+const { pathfinder, goals } = pathfinderPackage;
 function samePosition(a:{x:number;y:number;z:number},b:{x:number;y:number;z:number}){return a.x===b.x&&a.y===b.y&&a.z===b.z;}
 export class MineflayerWorld implements World {
   private spatial?:SpatialMemory;
@@ -43,16 +44,7 @@ export class MineflayerWorld implements World {
     // The full declare_recipes catalog is intentionally never added to observations.
     this.bot._client.on('unlock_recipes', packet => this.recipeBook.apply(packet));
     this.bot.on('spawn', () => {
-      const movement = new Movements(this.bot);
-      movement.exclusionAreasStep.push(block => {
-        // Unknown terrain is not an exploration shortcut. Observe the supporting
-        // surface first; collision geometry still comes from the client world.
-        const p=block.position;
-        return [0,1,2].some(dy=>this.memory.hasSupport({x:p.x,y:p.y-dy,z:p.z})) ? 0 : 100;
-      });
-      movement.canDig = false;
-      movement.allow1by1towers = false;
-      movement.allowParkour = false;
+      const movement = observedMovements(this.bot,this.memory);
       this.bot.pathfinder.setMovements(movement); this.ready = true;
       log('spawn');
     });
@@ -86,11 +78,11 @@ export class MineflayerWorld implements World {
     if(!e||e.name!=='item'||!this.entityVisible(e))throw Error('Dropped item no longer visible');
     if(this.enemies().length)throw Error('Visible danger prevents pickup');
     const p=e.position.clone?e.position.clone():e.position;
-    await this.bot.lookAt(p.offset(0,this.bot.entity.position.y-p.y+.05,0),false);this.observe(true);signal.throwIfAborted();
+    await this.bot.lookAt(p.offset(0,.05,0),false);this.observe(true);signal.throwIfAborted();
     let abort=()=>{};let rejectDanger:(error:Error)=>void=()=>{};
     const interrupted=new Promise<never>((_,reject)=>{rejectDanger=reject;abort=()=>{this.stop();reject(signal.reason);};signal.addEventListener('abort',abort,{once:true});});
     const monitor=setInterval(()=>{if(this.enemies().length){this.stop();rejectDanger(new Error('Visible danger interrupted pickup'));}},50);
-    try{await Promise.race([this.navigate(new goals.GoalNear(Math.floor(p.x),this.bot.entity.position.y,Math.floor(p.z),0)),interrupted]);}
+    try{await Promise.race([this.navigate(new goals.GoalNear(Math.floor(p.x),Math.floor(p.y),Math.floor(p.z),0),signal),interrupted]);}
     finally{clearInterval(monitor);signal.removeEventListener('abort',abort);this.stop();}
   }
   private async pickupItem(signal:AbortSignal,plan?:Plan){
@@ -132,7 +124,7 @@ export class MineflayerWorld implements World {
       if(!this.visible.some(b=>sameCell(b.position,request.position)&&b.name===request.expected))throw Error('Block target not currently observed');
       const cell=request.position,vec=this.bot.entity.position.scaled(0).offset(cell.x,cell.y,cell.z);
       target=this.bot.blockAt(vec);if(!target||target.name!==request.expected)throw Error('Block target changed');const stateId=target.stateId;
-      if(vec.distanceTo(this.bot.entity.position)>3)await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,3));
+      if(!this.bot.canDigBlock(target))await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,3),active);
       active.throwIfAborted();await this.bot.lookAt(vec.offset(.5,.5,.5),false);active.throwIfAborted();
       const fresh=()=>{const b=this.bot.blockAt(vec),feet=this.bot.entity.position;
         if(!b||b.stateId!==stateId||!this.blockInSight(b)||!b.diggable||!this.bot.canDigBlock(b))throw Error('Block target changed, occluded or currently unavailable');
@@ -148,7 +140,7 @@ export class MineflayerWorld implements World {
       const clock=new AbortController(),timer=setTimeout(()=>clock.abort(new DOMException('Mining attempt budget exhausted','TimeoutError')),request.maxMs??30000),timeout=clock.signal,digSignal=AbortSignal.any([active,timeout]);
       let stopDig:()=>void=()=>{};
       const interrupted=new Promise<never>((_,reject)=>{stopDig=()=>{this.bot.stopDigging();reject(digSignal.reason);};if(digSignal.aborted)stopDig();else digSignal.addEventListener('abort',stopDig,{once:true});});
-      try{await Promise.race([this.bot.dig(target),interrupted]);}catch(error){
+      try{await Promise.race([this.bot.dig(target,false,'raycast'),interrupted]);}catch(error){
         result.blockBroken=['air','cave_air','void_air'].includes(this.bot.blockAt(vec)?.name??'');
         if(timeout.aborted&&!active.aborted){result.status='time_limit';result.detail='Not completed within attempt budget; this does not establish impossibility';}else throw error;
       }finally{clearTimeout(timer);digSignal.removeEventListener('abort',stopDig);digEnded=Date.now();}
@@ -187,7 +179,7 @@ export class MineflayerWorld implements World {
     let block=this.bot.blockAt(vec);
     if(!block||block.name!==observed.name)throw Error('Block target changed');
     const stateId=block.stateId;
-    if(vec.distanceTo(this.bot.entity.position)>3)await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,3));
+    if(vec.distanceTo(this.bot.entity.position)>3)await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,3),signal);
     signal.throwIfAborted();await this.bot.lookAt(vec.offset(.5,.5,.5),false);signal.throwIfAborted();
     const fresh=()=>{const b=this.bot.blockAt(vec);if(!b||b.stateId!==stateId||vec.distanceTo(this.bot.entity.position)>4.5)throw Error('Block target changed or unreachable');return b;};
     block=fresh();
@@ -228,16 +220,15 @@ export class MineflayerWorld implements World {
   }
   // Exact ray to a known target supplements the sparse observation grid; it never discovers hidden targets.
   private blockInSight(block:NonNullable<ReturnType<mineflayer.Bot['blockAt']>>){
-    const eye=this.bot.entity.position.offset(0,1.62,0),delta=block.position.offset(.5,.5,.5).minus(eye),length=delta.norm();
-    if(length>VISION.range||length===0)return false;
-    const direction=delta.scaled(1/length),forward=viewDirection(this.bot.entity.yaw,this.bot.entity.pitch);
-    if(direction.x*forward.x+direction.y*forward.y+direction.z*forward.z<Math.cos(Math.PI/6))return false;
-    const hit=this.bot.world.raycast(eye,direction,length+.9) as unknown as {position:{x:number;y:number;z:number}}|null;
-    return !!hit&&samePosition(hit.position,block.position);
+    const eye=this.bot.entity.position.offset(0,1.62,0);
+    return !!visibleBlockFace(eye,this.bot.entity.yaw,this.bot.entity.pitch,block.position,(d,length)=>{
+      const hit=this.bot.world.raycast(eye,eye.scaled(0).offset(d.x,d.y,d.z),length) as unknown as {position:import('./vision.js').Position}|null;
+      return hit?.position??null;
+    });
   }
-  private placementSupport(){
+  private placementSupport(expected?:import('./vision.js').Position){
     this.observe();
-    return this.visible.filter(b=>['grass_block','dirt','stone','bedrock','cobblestone','oak_planks','birch_planks'].includes(b.name)&&b.position.y===Math.floor(this.bot.entity.position.y)-1)
+    return this.visible.filter(b=>(!expected||samePosition(b.position,expected))&&['grass_block','dirt','stone','bedrock','cobblestone','oak_planks','birch_planks'].includes(b.name)&&b.position.y===Math.floor(this.bot.entity.position.y)-1)
       .map(b=>this.bot.blockAt(this.bot.entity.position.scaled(0).offset(b.position.x,b.position.y,b.position.z)))
       .find(b=>b&&b.position.distanceTo(this.bot.entity.position)<4&&b.boundingBox==='block'&&
         this.bot.blockAt(b.position.offset(0,1,0))?.name==='air'&&this.bot.blockAt(b.position.offset(0,2,0))?.name==='air'&&
@@ -282,8 +273,9 @@ export class MineflayerWorld implements World {
         await this.bot.lookAt(support.position.offset(.5,1,.5),false);signal.throwIfAborted();
         if(!this.blockInSight(support))throw Error('No visible placement support');
         await this.bot.equip(item,'hand');signal.throwIfAborted();
-        if(this.bot.blockAt(target)?.name!=='air'||!this.placementSupport()||!samePosition(this.placementSupport()!.position,support.position)||!this.blockInSight(support))throw Error('No safe placement space');
+        if(this.bot.blockAt(target)?.name!=='air'||!this.placementSupport(support.position)||!this.blockInSight(support))throw Error('No safe placement space');
         await this.bot.placeBlock(support,support.position.scaled(0).offset(0,1,0));signal.throwIfAborted();
+        for(let i=0;i<20&&(this.bot.blockAt(target)?.name!=='crafting_table'||this.itemCount('crafting_table')!==before-1);i++)await delay(50,undefined,{signal});
         if(this.bot.blockAt(target)?.name!=='crafting_table'||this.itemCount('crafting_table')!==before-1)throw Error('Placement not confirmed');
         await this.bot.lookAt(target.offset(.5,.5,.5),false);this.observe(true);
         return `Placed crafting_table at ${target.x},${target.y},${target.z}`;
@@ -295,7 +287,7 @@ export class MineflayerWorld implements World {
         let target=this.bot.players[request.recipient]?.entity;
         if(!target||!this.entityVisible(target))throw Error('Player not visible');
         const before=this.itemCount(request.item);if(before<request.count)throw Error('Insufficient carried items');
-        if(target.position.distanceTo(this.bot.entity.position)>2)await this.navigate(new goals.GoalNear(target.position.x,target.position.y,target.position.z,2));
+        if(target.position.distanceTo(this.bot.entity.position)>2)await this.navigate(new goals.GoalNear(target.position.x,target.position.y,target.position.z,2),signal);
         signal.throwIfAborted();target=this.bot.players[request.recipient]?.entity;
         if(!target||!this.entityVisible(target)||target.position.distanceTo(this.bot.entity.position)>3)throw Error('Player moved out of reach');
         await this.bot.lookAt(target.position.offset(0,1,0),false);signal.throwIfAborted();
@@ -309,7 +301,7 @@ export class MineflayerWorld implements World {
       const p=plan?.container;if(!p)throw Error('Missing container');
       if(!this.visible.some(b=>['chest','furnace','blast_furnace','smoker'].includes(b.name)&&samePosition(b.position,p)))throw Error('No visible requested container');
       const vec=this.bot.entity.position.scaled(0).offset(p.x,p.y,p.z);
-      await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2));signal.throwIfAborted();
+      await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2),signal);signal.throwIfAborted();
       await this.bot.lookAt(vec.offset(.5,.5,.5),false);signal.throwIfAborted();
       const chest=this.bot.blockAt(vec);if(!chest||!['chest','furnace','blast_furnace','smoker'].includes(chest.name)||!this.blockInSight(chest))throw Error('No visible requested container');
       if(chest.name!=='chest')return await this.furnaceInteraction(chest,action,signal,plan!);
@@ -369,10 +361,27 @@ export class MineflayerWorld implements World {
     if(d.x*f.x+d.y*f.y+d.z*f.z<Math.cos(Math.PI/6))return false;
     return !this.bot.world.raycast(eye,d,Math.max(0,distance-.1));
   }
-  private async navigate(goal: InstanceType<typeof goals.GoalNear>) {
-    await this.bot.pathfinder.goto(goal);
-    // Upstream goto can resolve an empty no-path result; verify arrival ourselves.
-    if(!(goal.isEnd as unknown as (p: import('./vision.js').Position)=>boolean).call(goal,this.bot.entity.position.floored())) throw new Error('Destination not reached');
+  private async navigate(goal: InstanceType<typeof goals.GoalNear>,signal?:AbortSignal) {
+    // Traverse only observed supports, then look again from the reached frontier.
+    // Do not pass an incomplete/no-path search to goto: upstream can reject its
+    // Promise while continuing to walk a partial path.
+    try{
+      for(let leg=0;leg<8;leg++){
+        signal?.throwIfAborted();
+        const feet=this.bot.entity.position.floored();
+        if(goal.isEnd(feet as any))return;
+        const p=this.bot.entity.position,yaw=Math.atan2(-(goal.x+.5-p.x),-(goal.z+.5-p.z));
+        await this.bot.look(yaw,-Math.PI/4,false);signal?.throwIfAborted();this.observe(true);
+        const path=this.bot.pathfinder.getPathTo(this.bot.pathfinder.movements,goal,200);
+        const end=path.path.at(-1);
+        if(!end||end.x===feet.x&&end.y===feet.y&&end.z===feet.z)throw Error('Destination not reached: no observed route');
+        const waypoint=path.status==='success'?goal:new goals.GoalNear(end.x,end.y,end.z,0);
+        try{await this.bot.pathfinder.goto(waypoint);}finally{this.bot.pathfinder.setGoal(null);this.bot.clearControlStates();}
+        signal?.throwIfAborted();
+        if(!waypoint.isEnd(this.bot.entity.position.floored() as any))throw Error('Destination not reached: waypoint');
+      }
+      if(!goal.isEnd(this.bot.entity.position.floored() as any))throw Error('Destination not reached: approach limit');
+    }finally{this.bot.pathfinder.setGoal(null);this.bot.clearControlStates();}
   }
   private food() { return this.bot.inventory.items().find(i => this.bot.registry.foodsByName[i.name]); }
   private enemies(): Enemy[] {
@@ -473,7 +482,7 @@ export class MineflayerWorld implements World {
       if (action === 'move') {
         const p=plan?.destination;
         if (!p || !this.memory.snapshot().some(b=>b.position.x===p.x&&b.position.y===p.y&&b.position.z===p.z)) throw new Error('Destination not observed');
-        await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2));
+        await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2),signal);
         this.observe(true);
       }
       if (action === 'craft') {
@@ -484,7 +493,7 @@ export class MineflayerWorld implements World {
         const inventoryRecipe=this.bot.recipesFor(item.id,null,1,null)[0];
         let table=inventoryRecipe ? null : this.table();
         if(table) {
-          await this.navigate(new goals.GoalNear(table.position.x,table.position.y,table.position.z,2));
+          await this.navigate(new goals.GoalNear(table.position.x,table.position.y,table.position.z,2),signal);
           signal.throwIfAborted(); this.observe(true); table=this.table();
         }
         const recipe=inventoryRecipe ?? this.bot.recipesFor(item.id,null,1,table)[0];
@@ -508,7 +517,7 @@ export class MineflayerWorld implements World {
       if (action === 'follow') {
         const target = this.bot.players[this.c.follow]?.entity;
         if (!target || !this.entityVisible(target)) throw new Error('Player not visible');
-        await this.navigate(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 2));
+        await this.navigate(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 2),signal);
       }
       if (action === 'eat') {
         const item = this.food(); if (!item) throw new Error('No food');

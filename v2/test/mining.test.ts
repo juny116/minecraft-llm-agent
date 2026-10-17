@@ -56,3 +56,9 @@ test('pickup approaches the actual drop cell rather than stopping one block shor
 });
 
 test('confirmed destruction invalidates previously observed storage at that cell',async()=>{const f=setup();f.w.containers=[{position:{x:2,y:0,z:0},observedAt:1,items:[]}];await f.w.execute('mine',signal(),p);assert.deepEqual(f.w.containers,[]);});
+
+
+test('pickup uses visible drop elevation rather than the current feet height',async()=>{
+ const f=setup();f.bot.dig=async()=>{f.breakBlock();f.drop();f.bot.entities['42'].position=new V(2,1,0);};f.w.navigate=async(g:any)=>{assert.equal(g.y,1);assert.equal(g.rangeSq,0);f.receive();};
+ const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.inventoryGained[0].count,1);
+});

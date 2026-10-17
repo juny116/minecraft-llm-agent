@@ -80,3 +80,8 @@ test('abort inside inventory transfer prevents subsequent click',async()=>{
  f.w.bot.toss=async()=>{await f.w.bot.clickWindow();await f.w.bot.clickWindow();};
  await assert.rejects(f.w.execute('give',c.signal,{goal:'give',preferred:'give',transfer:{item:'oak_log',count:1,recipient:'Bob'}}));assert.equal(clicks,1);assert.equal(f.w.bot.clickWindow,originalClick);
 });
+
+
+test('table placement waits for delayed inventory/block acknowledgements instead of false failure',async()=>{
+ const f=fixture(),original=f.w.bot.placeBlock;f.w.bot.placeBlock=async()=>{setTimeout(()=>void original(),80);};assert.match(await f.w.execute('place_table',signal()),/Placed crafting_table/);assert.equal(f.inventory.crafting_table,0);
+});

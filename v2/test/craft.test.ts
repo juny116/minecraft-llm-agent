@@ -23,7 +23,21 @@ test('craft cancellation blocks subsequent clicks and restores handler',async()=
 });
 test('empty path resolution is not reported as successful arrival',async()=>{
  const world=Object.create(MineflayerWorld.prototype) as any;
- world.bot={pathfinder:{goto:async()=>{}},entity:{position:{floored:()=>({x:0,y:0,z:0})}}};
+ world.observe=()=>{};world.bot={look:async()=>{},clearControlStates:()=>{},pathfinder:{setGoal:()=>{},getPathTo:()=>({path:[],status:'noPath'}),goto:async()=>{}},entity:{position:{floored:()=>({x:0,y:0,z:0})}}};
  await assert.rejects(world.navigate({isEnd:()=>false}),/Destination not reached/);
  await world.navigate({isEnd:()=>true});
+});
+
+test('cancellation during approach look cannot start navigation afterwards',async()=>{
+ const world=Object.create(MineflayerWorld.prototype) as any,controller=new AbortController();let moves=0;
+ world.observe=()=>{};world.bot={look:async()=>controller.abort(),clearControlStates:()=>{},pathfinder:{setGoal:()=>{},goto:async()=>{moves++;}},entity:{position:{x:0,y:0,z:0,floored:()=>({x:0,y:0,z:0})}}};
+ await assert.rejects(world.navigate({x:2,z:0,isEnd:()=>false},controller.signal));assert.equal(moves,0);
+});
+
+
+test('incomplete paths use an observed frontier and navigation failure clears leftover motion',async()=>{
+ const world=Object.create(MineflayerWorld.prototype) as any;let x=0,clears=0,calls=0,stops=0;
+ world.observe=()=>{};world.bot={look:async()=>{},clearControlStates:()=>clears++,entity:{position:{x:0,y:0,z:0,floored:()=>({x,y:0,z:0})}},pathfinder:{setGoal:()=>stops++,getPathTo:()=>({path:[{x:2,y:0,z:0}],status:'noPath'}),goto:async(g:any)=>{calls++;assert.equal(g.x,2);x=2;}}};
+ await world.navigate({x:2,y:0,z:0,isEnd:(p:any)=>p.x===2});assert.equal(calls,1);assert.ok(stops>0&&clears>0);
+ x=0;world.bot.pathfinder.goto=async()=>{throw Error('No path');};await assert.rejects(world.navigate({x:2,y:0,z:0,isEnd:()=>false}),/No path/);assert.ok(stops>=4&&clears>=4);
 });

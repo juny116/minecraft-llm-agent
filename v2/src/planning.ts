@@ -6,7 +6,7 @@ export type Step = import('./types.js').Interaction & {id:string;description:str
 export type Outcome = 'succeeded'|'partial'|'failed'|'cancelled'|'skipped';
 export type Observation = ReturnType<typeof compact>;
 export type ActionRecord = {pickup?:PickupResult;mining?:MiningResult;id:number;startedAt:number;endedAt:number;source:'selector'|'local_safety';selectorKind:string;decision:Decision;decisionObserved:Observation;options:Action[];planVersion:number;goal:string|null;stepId:string|null;before:Observation;after:Observation;changes:ReturnType<typeof changes>;outcome:Outcome;result:string};
-export type PlanningContext = {goalReview?:import('./goals.js').GoalReview;goalState?:ReturnType<import('./goals.js').GoalBook['snapshot']>;userRequest?:string|null;longTermGoal:string|null;mediumTerm:{summary:string;steps:Step[];activeStep:number};replanReasons:string[];recentActions:ActionRecord[];olderSummary:{count:number;byAction:Partial<Record<Action,{count:number;failed:number;cancelled:number;partial:number;skipped:number}>>;inventoryNet:Record<string,number>;healthNet:number};failureStreak:number};
+export type PlanningContext = {plannerFeedback?:string;goalReview?:import('./goals.js').GoalReview;goalState?:ReturnType<import('./goals.js').GoalBook['snapshot']>;userRequest?:string|null;longTermGoal:string|null;mediumTerm:{summary:string;steps:Step[];activeStep:number};replanReasons:string[];recentActions:ActionRecord[];olderSummary:{count:number;byAction:Partial<Record<Action,{count:number;failed:number;cancelled:number;partial:number;skipped:number}>>;inventoryNet:Record<string,number>;healthNet:number};failureStreak:number};
 export function compact(s:Snapshot){
  const inventory:Record<string,number>={};
  for(const i of s.inventory??[])inventory[i.name]=(inventory[i.name]??0)+i.count;
@@ -14,10 +14,10 @@ export function compact(s:Snapshot){
 }
 export function changes(before:Observation,after:Observation){
  const inventory:Record<string,number>={};
- for(const name of new Set([...Object.keys(before.inventory),...Object.keys(after.inventory)])){
+ for(const name of before.ready&&after.ready?new Set([...Object.keys(before.inventory),...Object.keys(after.inventory)]):[]){
   const delta=(after.inventory[name]??0)-(before.inventory[name]??0);if(delta)inventory[name]=delta;
  }
- return {health:after.health-before.health,food:after.food-before.food,logs:after.logs-before.logs,inventory,position:{from:before.position,to:after.position},newlyUnlocked:[] as string[],newlyUnlockedCount:0,enemiesEntered:after.enemies.filter(e=>!before.enemies.some(old=>old.id===e.id)),enemiesLeft:before.enemies.filter(e=>!after.enemies.some(now=>now.id===e.id))};
+ return {health:after.health-before.health,food:after.food-before.food,logs:before.ready&&after.ready?after.logs-before.logs:0,inventory,position:{from:before.position,to:after.position},newlyUnlocked:[] as string[],newlyUnlockedCount:0,enemiesEntered:after.enemies.filter(e=>!before.enemies.some(old=>old.id===e.id)),enemiesLeft:before.enemies.filter(e=>!after.enemies.some(now=>now.id===e.id))};
 }
 export function completed(step:Step,s:Snapshot,successfulAction?:Action){
  const c=step.completion;

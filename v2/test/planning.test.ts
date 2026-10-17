@@ -80,3 +80,12 @@ test('elapsed action timeout counts as failure; explicit cancellation does not',
  f.world.execute=async(_a,signal)=>{const {setTimeout:delay}=await import('node:timers/promises');await delay(200,undefined,{signal});return 'late';};await r.tick();
  assert.equal(r.planning.recentActions.at(-1)!.outcome,'failed');assert.match(r.planning.recentActions.at(-1)!.result,/timed out/);assert.equal(r.planning.failureStreak,1);r.close();
 });
+
+test('planner rejection backoff does not resume a repeatedly failed action',async()=>{
+ const f=setup();await prime(f.runtime);f.fail();await f.runtime.tick();await f.runtime.tick();f.brain.plan=async()=>{throw Error('Invalid goal evidence reference');};await f.runtime.refreshPlan();const count=f.runtime.planning.recentActions.length;await f.runtime.tick();assert.equal(f.runtime.planning.recentActions.length,count);f.runtime.close();
+});
+
+
+test('disconnect inventory absence is not recorded as item loss',async()=>{
+ const {changes,compact}=await import('../src/planning.js');const w=new MockWorld();w.state.inventory=[{name:'bread',count:3,slot:9}];w.state.logs=1;const before=compact(w.snapshot());w.state.ready=false;w.state.inventory=[];w.state.logs=0;const delta=changes(before,compact(w.snapshot()));assert.deepEqual(delta.inventory,{});assert.equal(delta.logs,0);
+});

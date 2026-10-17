@@ -63,3 +63,13 @@ test('contextual planner accepts waiting without steps but requires steps for wo
  result={longTermGoal:'Eat',goal:'Eat',preferred:'eat',steps:[]};
  await assert.rejects(brain.plan(new MockWorld().snapshot(),[],signal(),null,context),/actionable steps/);
 });
+
+test('social API distinguishes intended from running work and repairs wrong language within one extra call',async()=>{
+ let calls=0;const speech={to:'all',kind:'chat',text:'Привет'};
+ const transport=(async(_url:any,init:any)=>{calls++;const body=JSON.parse(init.body),data=JSON.parse(body.messages[1].content);if(calls===1){assert.equal(data.execution.activeAction,null);assert.match(body.messages[0].content,/NOT execution/);}return Response.json({choices:[{message:{content:JSON.stringify({speech:{...speech,text:calls===1?speech.text:'안녕, 주변을 살펴볼게.'}})}}],usage:{prompt_tokens:10,completion_tokens:5}});}) as typeof fetch;
+ const b=new ApiBrain(c(),new Budget(3,1),transport);const result=await b.communicate(new MockWorld().snapshot(),{goal:'gather',preferred:'mine'},signal(),{activeAction:null,planPending:false});assert.match(result!.text,/살펴/);assert.equal(calls,2);
+});
+test('wrong language after bounded repair is not sent',async()=>{
+ let calls=0;const transport=(async()=>{calls++;return Response.json({choices:[{message:{content:JSON.stringify({speech:{to:'all',kind:'chat',text:'Привет'}})}}],usage:{prompt_tokens:1,completion_tokens:1}});}) as typeof fetch;
+ const b=new ApiBrain(c(),new Budget(3,1),transport);await assert.rejects(b.communicate(new MockWorld().snapshot(),{goal:'wait',preferred:'idle'},signal()),/Korean/);assert.equal(calls,2);
+});

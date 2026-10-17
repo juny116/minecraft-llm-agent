@@ -26,11 +26,25 @@ export class PlaceMemory {
     while(this.blocks.size>1024) this.blocks.delete(this.blocks.keys().next().value!);
   }
   snapshot() { return structuredClone([...this.blocks.values()]); }
-  hasSupport(p: Position) { return this.blocks.has(key({x:p.x,y:p.y-1,z:p.z})); }
+  hasSupport(p: Position) { const b=this.blocks.get(key({x:p.x,y:p.y-1,z:p.z}));return !!b&&!['air','cave_air','void_air','water','lava'].includes(b.name); }
   clear() { this.blocks.clear(); }
 }
 // Bounded prompt view; retain landmarks before common terrain, then recent cells.
 export function summarizePlaces(blocks: SeenBlock[], limit = 128): SeenBlock[] {
   const terrain = new Set(['grass_block','dirt','stone','bedrock','sand','water']);
   return [...blocks].sort((a,b)=>Number(terrain.has(a.name))-Number(terrain.has(b.name)) || b.lastSeen-a.lastSeen).slice(0,limit);
+}
+
+// A visible top/side face remains interactable even when the center ray enters
+// an adjacent solid block first. Each candidate still needs FOV and first-hit proof.
+export function visibleBlockFace(eye:Position,yaw:number,pitch:number,p:Position,cast:(direction:Position,length:number)=>Position|null){
+ const forward=viewDirection(yaw,pitch);
+ for(const [x,y,z] of [[.5,.5,.5],[.5,.999,.5],[.5,.001,.5],[.001,.5,.5],[.999,.5,.5],[.5,.5,.001],[.5,.5,.999]]){
+  const point={x:p.x+x,y:p.y+y,z:p.z+z},dx=point.x-eye.x,dy=point.y-eye.y,dz=point.z-eye.z,length=Math.hypot(dx,dy,dz);
+  if(!length||length>VISION.range)continue;
+  const d={x:dx/length,y:dy/length,z:dz/length};
+  if(d.x*forward.x+d.y*forward.y+d.z*forward.z<Math.cos(Math.PI/6))continue;
+  const hit=cast(d,length+.01);if(hit&&key(hit)===key(p))return point;
+ }
+ return null;
 }

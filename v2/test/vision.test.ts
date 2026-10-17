@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {sampleView, PlaceMemory, viewDirection} from '../src/vision.js';
+import {sampleView, PlaceMemory, viewDirection, visibleBlockFace} from '../src/vision.js';
 import {parsePlan} from '../src/providers.js';
 import {candidates} from '../src/types.js';
 import {MockWorld} from '../src/mock.js';
@@ -30,4 +30,13 @@ test('parameter validation and remembered-destination gating reject fabricated m
  const s=new MockWorld().snapshot();s.places=[{name:'chest',position:{x:1,y:2,z:3},lastSeen:1}];
  const p=parsePlan({goal:'go',preferred:'move',destination:{x:1,y:2,z:3}});
  assert.ok(candidates(s,p).includes('move'));p.destination!.x=100;assert.ok(!candidates(s,p).includes('move'));
+});
+
+
+test('visible top face is accepted when adjacent terrain occludes the center, hidden faces remain rejected',()=>{
+ const eye={x:.5,y:2.62,z:.5},target={x:0,y:0,z:3},pitch=Math.atan2(1-eye.y,3);
+ const cast=(d:any)=>{const t=(1-eye.y)/d.y;return t>0?{x:Math.floor(eye.x+d.x*t),y:0,z:Math.floor(eye.z+d.z*t)}:null;};
+ const point=visibleBlockFace(eye,Math.PI,pitch,target,cast);assert.ok(point);assert.equal(point.y,.999);
+ assert.equal(visibleBlockFace(eye,Math.PI,pitch,target,()=>({x:0,y:1,z:1})),null);
+ assert.equal(visibleBlockFace(eye,0,pitch,target,cast),null);
 });

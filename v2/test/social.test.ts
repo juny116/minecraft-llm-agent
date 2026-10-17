@@ -55,3 +55,9 @@ test('dedicated dialogue API uses limited attributed context, not another bot pr
  const brain=new ApiBrain({...config(),llmKey:'fake',mode:'jev'},new Budget(1,1),(async(_url:any,init:any)=>{const b=JSON.parse(init.body),data=JSON.parse(b.messages[1].content);assert.equal(data.state.social.heard[0].source,'heard_unverified');assert.equal(data.state.places,undefined);return Response.json({choices:[{message:{content:JSON.stringify({speech:{to:'Alice',kind:'question',replyTo:'question',text:'나무를 먼저 모아볼까?'}})}}],usage:{prompt_tokens:1,completion_tokens:1}});}) as typeof fetch);
  const reply=await brain.communicate(s,{goal:'주변 관찰',preferred:'look'},new AbortController().signal);assert.equal(reply?.replyTo,'question');
 });
+
+test('speech generated against an old intention is discarded after plan changes',async()=>{
+ const w=new MockWorld();w.state.nearbyPlayers=[{name:'Bob',position:{x:2,y:64,z:0}}];let finish!:(v:any)=>void,count=0;w.chat=()=>count++;
+ const r=new Runtime(w,{plan:()=>new Promise<any>(()=>{}),choose:async()=>({action:'idle',confidence:1}),communicate:()=>new Promise(resolve=>{finish=resolve;})},{planMs:10000,actionMs:1000,minConfidence:0,social:new SocialMemory('Alice')},()=>{});
+ await r.tick();r.setGoal('Inspect surroundings');finish({to:'Bob',kind:'chat',text:'나무를 모을게.'});await new Promise(resolve=>setTimeout(resolve,0));assert.equal(count,0);r.close();
+});
