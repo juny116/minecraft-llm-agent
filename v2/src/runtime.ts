@@ -194,5 +194,5 @@ export class Runtime {
    this.actionPending=false;this.activeAction=undefined;this.actionController=undefined;
   }
  }
- close(){this.closed=true;this.epoch++;this.lifetime.abort();this.actionController?.abort();this.world.stop();this.world.close();}
+ close(drainModels=false){this.closed=true;this.epoch++;if(!drainModels)this.lifetime.abort();this.actionController?.abort();this.world.stop();this.world.close();}
 }

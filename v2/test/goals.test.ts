@@ -71,3 +71,8 @@ test('fresh successful review can resume saved intentions without replaying old 
  const goals=new GoalBook(file);let selected=0;const brain:Brain={plan:async(_s,_h,_sig,_u,c)=>response(c!.goalReview!),choose:async(_s,p)=>{assert.equal(p.activeGoalId,'food');assert.equal(p.mine,undefined);selected++;return {action:'idle',confidence:1};}};
  w.execute=async()=> 'wait';const r=new Runtime(w,brain,{...opts,goals},()=>{});await r.tick();await delay(5);assert.equal(goals.needsReview,false);await r.tick();assert.equal(selected,1);assert.equal(r.userGoal,null);r.close();
 });
+test('accounting drain closes gameplay without aborting pending model usage or applying late plans',async()=>{
+ const goals=new GoalBook(),w=new MockWorld();let resolve!:(p:Plan)=>void;let signal!:AbortSignal;let review!:GoalReview;
+ const brain:Brain={plan:async(_s,_h,s,_u,c)=>{signal=s;review=c!.goalReview!;return new Promise<Plan>(r=>resolve=r);},choose:async()=>({action:'idle',confidence:1})};
+ const r=new Runtime(w,brain,{...opts,goals},()=>{});const pending=r.refreshPlan();r.close(true);assert.equal(w.state.ready,false);assert.equal(signal.aborted,false);resolve(response(review));await pending;assert.equal(goals.snapshot().goals.length,0);
+});
