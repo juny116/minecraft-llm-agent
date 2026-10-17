@@ -1,5 +1,5 @@
-export function pilotStopReason(s:{elapsedMs:number;maxMs:number;states:{ready:boolean;health:number;lifecycle?:{phase:string;deathCount:number}}[];allowRespawn?:boolean;respawnWaitMs?:number;budgetExhausted:boolean;noProgressMs:number;consecutiveFailures:number}):string|null{
- if(s.elapsedMs>=Math.min(s.maxMs,300000))return 'time_limit';
+export function pilotStopReason(s:{elapsedMs:number;maxMs:number;authorizedMaxMs?:number;states:{ready:boolean;health:number;lifecycle?:{phase:string;deathCount:number}}[];allowRespawn?:boolean;respawnWaitMs?:number;budgetExhausted:boolean;noProgressMs:number;consecutiveFailures:number}):string|null{
+ if(s.elapsedMs>=Math.min(s.maxMs,Math.max(0,Math.min(s.authorizedMaxMs??300000,1800000))))return 'time_limit';
  if(s.budgetExhausted)return 'budget_or_usage_limit';
  if(s.allowRespawn&&s.states.some(b=>(b.lifecycle?.deathCount??0)>=3))return 'repeated_death';
  if(s.allowRespawn&&(s.respawnWaitMs??0)>30000)return 'respawn_timeout';

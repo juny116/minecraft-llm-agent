@@ -11,15 +11,17 @@ import {compact} from '../src/planning.js';
 import {pilotStopReason} from '../src/pilot.js';
 if(!process.argv.includes('--live-functional')||!process.argv.includes('--with-api'))throw Error('Explicit live/API functional flags required');
 process.env.MEMORY_NAMESPACE??='survival-pilot-v1';
+const extended=process.argv.includes('--extended-functional');
 const source=(()=>{try{return {revision:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),dirty:!!execFileSync('git',['status','--porcelain'],{encoding:'utf8'}).trim()};}catch{return {revision:null,dirty:null};}})();
 const c={...config(),mode:'jev' as const};if(c.names.length!==2)throw Error('Pilot needs exactly two bot names');
 if(!c.llmKey||!c.jevKey)throw Error('Missing API key');
 const dir=join('runs',`survival-pilot-${Date.now()}`);mkdirSync(dir,{recursive:true,mode:0o700});
-const ledger=new FunctionalLedger('runs/functional-cost-ledger.json',Math.min(c.maxCalls,300),Math.min(c.maxUsd,.25));
+const ledger=new FunctionalLedger('runs/functional-cost-ledger.json',Math.min(c.maxCalls,extended?5000:300),Math.min(c.maxUsd,extended?2.25:.25));
 let creditBlocked=false;
 const transport:typeof fetch=async(url,init)=>{if(process.env.TRACE_MODEL_INPUTS==='1'&&typeof init?.body==='string'){const req=JSON.parse(init.body),input=req.messages?JSON.parse(req.messages.at(-1).content):req.state;log('api','model_input',{model:req.model,state:input.state??input.observation,plan:input.plan,requirements:input.responseRequirements});}const response=await fetch(url,init);if(response.status===402)creditBlocked=true;if(response.ok){const data=await response.clone().json();log('api','model_output',{model:String(url).startsWith(c.jevUrl)?c.jevModel:c.llmModel,content:data.choices?.[0]?.message?.content??data.answers,usage:data.usage});}else log('api','http_error',{status:response.status});return response;};
 const budget=ledger.budget,brain=new ApiBrain(c,budget,transport),worlds:MineflayerWorld[]=[],runtimes:Runtime[]=[],pending=new Set<Promise<void>>();
-let respawnSince:number|null=null;let reason='',lastProgress=Date.now();const failureStreak=new Map<string,number>();const runtimeMs=Math.min(c.runSeconds,300)*1000;
+let activityTimer:ReturnType<typeof setInterval>|undefined;
+let respawnSince:number|null=null;let reason='',lastProgress=Date.now();const failureStreak=new Map<string,number>();const runtimeMs=Math.min(c.runSeconds,extended?1800:300)*1000;
 const log=(bot:string,event:string,data:Record<string,unknown>={})=>{
  appendFileSync(join(dir,'events.jsonl'),JSON.stringify({at:Date.now(),bot,event,data})+'\n',{mode:0o600});
  if(event==='action_record'){
@@ -38,15 +40,18 @@ try{
  if(!reason)await delay(1000);
  for(let i=0;i<worlds.length;i++)log(c.names[i],'initial_observation',{observation:compact(worlds[i].snapshot())});
  const started=Date.now();lastProgress=started;
+ activityTimer=setInterval(()=>{for(let i=0;i<runtimes.length;i++)log(c.names[i],'activity_sample',{...runtimes[i].executionStatus});},100);
+ log('run','started',{runtimeMs});
  while(!reason){
   const states=worlds.map(w=>w.snapshot());if(states.some(s=>s.health<=0||s.lifecycle?.phase==='dead'))respawnSince??=Date.now();else respawnSince=null;
-  reason=creditBlocked?'credit_required':budget.unsettledUsage?'usage_unknown':pilotStopReason({elapsedMs:Date.now()-started,maxMs:runtimeMs,states,allowRespawn:true,respawnWaitMs:respawnSince===null?0:Date.now()-respawnSince,budgetExhausted:budget.exhausted,noProgressMs:Math.max(0,Date.now()-lastProgress-Math.max(0,2*c.apiMs-30000)),consecutiveFailures:Math.max(0,...failureStreak.values())})??'';
+  reason=creditBlocked?'credit_required':budget.unsettledUsage?'usage_unknown':pilotStopReason({elapsedMs:Date.now()-started,maxMs:runtimeMs,authorizedMaxMs:extended?1800000:300000,states,allowRespawn:true,respawnWaitMs:respawnSince===null?0:Date.now()-respawnSince,budgetExhausted:budget.exhausted,noProgressMs:Math.max(0,Date.now()-lastProgress-Math.max(0,2*c.apiMs-30000)),consecutiveFailures:Math.max(0,...failureStreak.values())})??'';
   if(reason)break;
   for(const r of runtimes){const task=r.tick().catch(()=>{reason='runtime_error';});pending.add(task);void task.finally(()=>pending.delete(task));}
   await delay(Math.max(1,Math.min(Math.max(100,c.tickMs),runtimeMs-(Date.now()-started))));
  }
 }catch{reason='startup_or_runtime_error';process.exitCode=1;}
 finally{
+ if(activityTimer)clearInterval(activityTimer);log('run','stopped',{reason});
  for(let i=0;i<worlds.length;i++)log(c.names[i],'final_observation',{observation:compact(worlds[i].snapshot())});
  for(const r of runtimes)r.close(true);for(const w of worlds)if(!runtimes.some(r=>r.world===w))w.close();
  // Disconnect immediately but drain already-dispatched model responses for usage accounting; late plans cannot execute.

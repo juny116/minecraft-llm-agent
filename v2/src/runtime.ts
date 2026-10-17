@@ -225,6 +225,8 @@ export class Runtime {
    this.actionPending=false;this.activeAction=undefined;this.actionController=undefined;
   }
  }
+ private lastSelection:{action:Action|'continue';at:number}|null=null;
+ get executionStatus(){return {activeAction:this.activeAction??null,actionPending:this.actionPending,selectorPending:this.decisionPending,mediumPending:this.planPending,longPending:this.longPending,dialoguePending:this.socialPending,reflectionPending:this.reflectionPending,needsGoalReview:this.options.goals?.needsReview??false,hasLongGoal:!!this.longGoal,lastSelection:this.lastSelection?{...this.lastSelection}:null};}
  private supervisorAt=-Infinity;
  private supervisorUrgent=true;
  private longPending=false;
@@ -339,13 +341,13 @@ export class Runtime {
    const fresh=this.world.snapshot();
    if(!fresh.ready||fresh.health<=0||Date.now()-started>(this.options.decisionTtlMs??5000)||execId!==this.executionId){this.log('decision_discarded');return;}
    if(fresh.health<s.health||JSON.stringify(fresh.enemies?.map(e=>e.id)??[])!==enemyKey){this.supervisorUrgent=true;this.log('decision_discarded',{reason:'threat changed'});return;}
-   if(d.choice==='continue'){this.log('execution_continue',{executionId:execId});return;}
+   if(d.choice==='continue'){this.lastSelection={action:'continue',at:Date.now()};this.log('execution_continue',{executionId:execId});return;}
    const selected=d.choice==='wait'?{id:'wait',action:'idle' as Action,plan:{goal:'Intentional wait',preferred:'idle' as Action}}:options.find(o=>o.id===d.choice);
    if(!selected||!candidates(fresh,selected.plan).includes(selected.action))return;
    if(this.actionPending&&this.activeAction===selected.action&&executionIdentity(this.activeAction!,this.executionPlan!)===executionIdentity(selected.action,selected.plan))return;
    if(this.actionPending){this.actionController?.abort();this.world.stop();await this.executionTask;}
    if(this.closed||life!==this.longGeneration||!candidates(this.world.snapshot(),selected.plan).includes(selected.action))return;
-   this.log('decision',{action:selected.action,confidence:d.confidence,control:'start_or_switch'});
+   this.lastSelection={action:selected.action,at:Date.now()};this.log('decision',{action:selected.action,confidence:d.confidence,control:'start_or_switch'});
    this.executionId++;this.executionStarted=Date.now();this.executionPlan=structuredClone(selected.plan);this.executionObserved=structuredClone(fresh);
    this.executionTask=this.run({action:selected.action,confidence:d.confidence},options.map(o=>o.action),'selector',fresh,selected.plan);
    void this.executionTask.catch(()=>this.log('execution_error'));
