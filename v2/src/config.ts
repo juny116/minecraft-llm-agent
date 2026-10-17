@@ -20,7 +20,7 @@ export function config() {
     follow: process.env.FOLLOW_PLAYER ?? '',
     runSeconds: number('RUN_SECONDS', 300, 1), tickMs: number('DECISION_INTERVAL_MS', 2000, 100),
     planMs: number('PLAN_INTERVAL_MS', 30000, 1000), actionMs: number('ACTION_TIMEOUT_MS', 20000, 100),
-    apiMs: number('API_TIMEOUT_MS', 15000, 100), maxCalls: number('MAX_API_CALLS', 500, 1),
+    apiMs: number('API_TIMEOUT_MS', 120000, 100), maxCalls: number('MAX_API_CALLS', 500, 1),
     maxUsd: number('MAX_ESTIMATED_USD', 2, 0.001),
     llmUrl: process.env.LLM_BASE_URL ?? 'https://api.openai.com/v1',
     llmModel: process.env.LLM_MODEL ?? 'gpt-6-luna', llmKey: process.env.LLM_API_KEY ?? '',

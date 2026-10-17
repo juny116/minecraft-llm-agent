@@ -20,3 +20,12 @@ test('reconciliation never overrides a running session or an invalid ceiling',()
   assert.throws(()=>boundUnknownRun(file,'bad'),/Cannot bound/);assert.equal(JSON.parse(readFileSync(file,'utf8')).entries[0].status,'usage_unknown');
  }finally{rmSync(dir,{recursive:true});}
 });
+
+test('per-request unknown ceilings persist without blocking a settled next run',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'ledger-request-'));try{
+  const file=join(dir,'cost.json'),l=new FunctionalLedger(file,10,1);l.budget.reserve(.03);l.budget.boundUnknown(.03);l.budget.release(.03);l.budget.record({input_tokens:100,output_tokens:10},.1,.5);
+  const result=l.finish();assert.equal(result.status,'bounded_unknown');assert.equal(result.hasBoundedEstimates,true);assert.ok(result.reportedTotalUsd<result.totalUsd);
+  const entry=JSON.parse(readFileSync(file,'utf8')).entries[0];assert.equal(entry.reserved,0);assert.equal(entry.upperBoundUsd,entry.usd);assert.ok(Math.abs(entry.usd-entry.reportedUsd-.03)<1e-12);
+  const next=new FunctionalLedger(file,10,1);next.finish();
+ }finally{rmSync(dir,{recursive:true});}
+});

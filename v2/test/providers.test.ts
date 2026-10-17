@@ -42,11 +42,10 @@ test('call reservations prevent concurrent requests exceeding the shared cap', a
   assert.equal(called, 1); assert.equal(results.filter(x => x.status === 'rejected').length, 1);
 });
 
-test('provider failure never echoes body or key; unknown usage stops further calls', async () => {
-  const budget = new Budget(10, 2);
-  const brain = new ApiBrain(c(), budget, (async () => new Response('secret response body', { status: 500 })) as typeof fetch);
-  await assert.rejects(brain.plan(new MockWorld().snapshot(), [], signal()), /^Error: API HTTP 500$/);
-  assert.ok(budget.exhausted);
+test('transient HTTP failures are bounded, redacted and retried once', async () => {
+ const budget=new Budget(10,2),brain=new ApiBrain(c(),budget,(async()=>new Response('secret response body',{status:500})) as typeof fetch);
+ await assert.rejects(brain.plan(new MockWorld().snapshot(),[],signal()),/API http 500/);
+ assert.equal(budget.calls,2);assert.equal(budget.boundedUnknownUsage,2);assert.equal(budget.unsettledUsage,0);assert.ok(budget.usd>0);assert.equal(budget.usd,budget.unknownUsd);assert.equal(budget.reservedUsd,0);assert.ok(!JSON.stringify(budget.diagnostics).includes('secret response'));
 });
 
 test('preflight refusal is unbilled, not an unknown dispatched request',async()=>{let called=0;const b=new Budget(10,.000001),brain=new ApiBrain(c(),b,(async()=>{called++;throw Error('must not dispatch');}) as typeof fetch);await assert.rejects(brain.plan(new MockWorld().snapshot(),[],signal()),/preflight/);assert.equal(called,0);assert.equal(b.calls,0);assert.equal(b.unknownUsage,0);assert.equal(b.reservedUsd,0);});
@@ -73,3 +72,14 @@ test('wrong language after bounded repair is not sent',async()=>{
  let calls=0;const transport=(async()=>{calls++;return Response.json({choices:[{message:{content:JSON.stringify({speech:{to:'all',kind:'chat',text:'Привет'}})}}],usage:{prompt_tokens:1,completion_tokens:1}});}) as typeof fetch;
  const b=new ApiBrain(c(),new Budget(3,1),transport);await assert.rejects(b.communicate(new MockWorld().snapshot(),{goal:'wait',preferred:'idle'},signal()),/Korean/);assert.equal(calls,2);
 });
+
+const ok=()=>Response.json({choices:[{message:{content:'{"goal":"wait","preferred":"idle"}'}}],usage:{prompt_tokens:10,completion_tokens:2}});
+test('timeout retry succeeds with first request ceiling retained',async()=>{
+ let calls=0;const b=new Budget(10,1),brain=new ApiBrain({...c(),apiMs:5},b,(async(_u:any,init:any)=>{if(++calls===1)return await new Promise((_resolve,reject)=>init.signal.addEventListener('abort',()=>reject(init.signal.reason)));return ok();}) as typeof fetch);
+ const keepAlive=setTimeout(()=>{},1000);try{await brain.plan(new MockWorld().snapshot(),[],signal());}finally{clearTimeout(keepAlive);}
+ assert.equal(calls,2);assert.equal(b.boundedUnknownUsage,1);assert.ok(b.usd>b.unknownUsd);assert.ok(b.diagnostics.some(x=>x.kind==='timeout'));assert.equal(b.reservedUsd,0);
+});
+test('already cancelled request never dispatches or charges',async()=>{const b=new Budget(5,1),a=new AbortController();a.abort();const brain=new ApiBrain(c(),b,(async()=>{throw Error('must not dispatch');}) as typeof fetch);await assert.rejects(brain.plan(new MockWorld().snapshot(),[],a.signal));assert.equal(b.calls,0);assert.equal(b.usd,0);});
+test('in-flight cancellation charges ceiling but never retries',async()=>{const b=new Budget(5,1),a=new AbortController();let calls=0;const brain=new ApiBrain(c(),b,(async()=>{calls++;a.abort();throw Error('private network details');}) as typeof fetch);await assert.rejects(brain.plan(new MockWorld().snapshot(),[],a.signal),/cancelled/);assert.equal(calls,1);assert.equal(b.boundedUnknownUsage,1);assert.equal(b.reservedUsd,0);});
+test('missing usage charges each attempt and third unknown opens circuit',async()=>{const b=new Budget(10,1),brain=new ApiBrain(c(),b,(async()=>Response.json({})) as typeof fetch);await assert.rejects(brain.plan(new MockWorld().snapshot(),[],signal()),/missing_usage/);await assert.rejects(brain.plan(new MockWorld().snapshot(),[],signal()),/missing_usage/);assert.equal(b.calls,3);assert.equal(b.boundedUnknownUsage,3);assert.equal(b.exhausted,true);});
+test('HTTP 429 is retried with no unknown charge, auth errors stop without retry',async()=>{let calls=0;const b=new Budget(5,1),brain=new ApiBrain(c(),b,(async()=>++calls===1?new Response('',{status:429}):ok()) as typeof fetch);await brain.plan(new MockWorld().snapshot(),[],signal());assert.equal(calls,2);assert.equal(b.unknownUsd,0);const fatal=new Budget(5,1);await assert.rejects(new ApiBrain(c(),fatal,(async()=>new Response('',{status:401})) as typeof fetch).plan(new MockWorld().snapshot(),[],signal()),/401/);assert.equal(fatal.calls,1);assert.ok(fatal.exhausted);});

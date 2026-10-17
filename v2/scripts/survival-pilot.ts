@@ -27,6 +27,7 @@ const log=(bot:string,event:string,data:Record<string,unknown>={})=>{
   if(r.outcome==='succeeded'&&!noOpMove(r)&&!['idle','look'].includes(r.decision.action))lastProgress=Date.now();
  }else if(event==='social_speech'&&data.sent)lastProgress=Date.now();
 };
+budget.onDiagnostic=data=>log('api','api_request',data);
 const interrupt=()=>{reason='operator_stop';};process.once('SIGINT',interrupt);process.once('SIGTERM',interrupt);
 try{
  writeFileSync(join(dir,'config.json'),JSON.stringify({source,mode:'live-functional',agentTrack:'A',goalInterface:'evidence-goals-v1',names:c.names,llmModel:c.llmModel,jevModel:c.jevModel,runtimeMs,maxCalls:budget.maxCalls,maxRunUsd:budget.maxUsd}),{mode:0o600});
@@ -37,7 +38,7 @@ try{
  for(let i=0;i<worlds.length;i++)log(c.names[i],'initial_observation',{observation:compact(worlds[i].snapshot())});
  const started=Date.now();lastProgress=started;
  while(!reason){
-  reason=creditBlocked?'credit_required':budget.unknownUsage?'usage_unknown':pilotStopReason({elapsedMs:Date.now()-started,maxMs:runtimeMs,states:worlds.map(w=>w.snapshot()),budgetExhausted:budget.exhausted,noProgressMs:Date.now()-lastProgress,consecutiveFailures:Math.max(0,...failureStreak.values())})??'';
+  reason=creditBlocked?'credit_required':budget.unsettledUsage?'usage_unknown':pilotStopReason({elapsedMs:Date.now()-started,maxMs:runtimeMs,states:worlds.map(w=>w.snapshot()),budgetExhausted:budget.exhausted,noProgressMs:Math.max(0,Date.now()-lastProgress-Math.max(0,2*c.apiMs-30000)),consecutiveFailures:Math.max(0,...failureStreak.values())})??'';
   if(reason)break;
   for(const r of runtimes){const task=r.tick().catch(()=>{reason='runtime_error';});pending.add(task);void task.finally(()=>pending.delete(task));}
   await delay(Math.max(1,Math.min(Math.max(100,c.tickMs),runtimeMs-(Date.now()-started))));

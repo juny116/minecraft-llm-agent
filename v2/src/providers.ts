@@ -1,3 +1,5 @@
+import {randomUUID} from 'node:crypto';
+import {setTimeout as retryDelay} from 'node:timers/promises';
 import {planningInput} from './planning-input.js';
 import {supportsFeet} from './building.js';
 import {isDeepStrictEqual} from 'node:util';
@@ -11,9 +13,12 @@ import type { Config } from './config.js';
 import { actions, type Action, type Brain, type DecisionPlan, type Plan, type Snapshot } from './types.js';
 
 export class Budget {
-  calls = 0; usd = 0; input = 0; output = 0; unknownUsage = 0; reservedUsd=0; preflightBlocked=false;
+  calls = 0; usd = 0; input = 0; output = 0; unknownUsage = 0; boundedUnknownUsage=0; unknownUsd=0; fatal=false; diagnostics:Record<string,unknown>[]=[]; onDiagnostic?:(event:Record<string,unknown>)=>void; reservedUsd=0; preflightBlocked=false;
   constructor(readonly maxCalls: number, readonly maxUsd: number) {}
-  get exhausted() { return this.calls >= this.maxCalls || this.usd >= this.maxUsd || this.unknownUsage > 0 || this.preflightBlocked; }
+  get exhausted() { return this.calls >= this.maxCalls || this.usd >= this.maxUsd || this.unsettledUsage > 0 || this.boundedUnknownUsage >= 3 || this.fatal || this.preflightBlocked; }
+  get unsettledUsage(){return this.unknownUsage-this.boundedUnknownUsage;}
+  diagnostic(event:Record<string,unknown>){const row={at:Date.now(),...event};this.diagnostics.push(row);this.onDiagnostic?.(row);}
+  boundUnknown(upperUsd:number){if(!Number.isFinite(upperUsd)||upperUsd<0)throw Error('Invalid unknown ceiling');this.unknownUsage++;this.boundedUnknownUsage++;this.unknownUsd+=upperUsd;this.usd+=upperUsd;}
   reserve(upperUsd=0) {
     if(!Number.isFinite(upperUsd)||upperUsd<0)throw new Error('Invalid reservation');
     if(this.usd+this.reservedUsd+upperUsd>this.maxUsd){this.preflightBlocked=true;throw new Error('API preflight budget limit; request not sent');}
@@ -76,33 +81,45 @@ export function parsePlan(raw: unknown): Plan {
 export class ApiBrain implements Brain {
   get reflectionModel(){return this.c.llmModel;}
   constructor(private c: Config, readonly budget: Budget, private request: typeof fetch = fetch) {}
-  private async post(url: string, key: string, body: unknown, signal: AbortSignal, rates: [number, number]) {
+  private async post(url: string, key: string, body: unknown, signal: AbortSignal, rates: [number, number], timeoutMs=this.c.apiMs) {
     if (!key) throw new Error('Missing API key');
-    const serialized=JSON.stringify(body);
-    // UTF-8 bytes conservatively bound ordinary BPE input tokens; include framing allowance.
+    const serialized=JSON.stringify(body),model=String((body as any)?.model??'unknown');
+    // Byte bound plus framing allowance; unknown replies consume the full reservation.
     const upperUsd=(Buffer.byteLength(serialized)+1024)*rates[0]/1e6+this.c.maxOutput*rates[1]/1e6;
-    this.budget.reserve(upperUsd);
-    try {
-    let response: Response;
-    try {
-      response = await this.request(url, { method: 'POST', headers: {
-        'Content-Type': 'application/json', Authorization: `Bearer ${key}`,
-      }, body: serialized, signal: AbortSignal.any([signal, AbortSignal.timeout(this.c.apiMs)]) });
-    } catch {
-      this.budget.unknownUsage++; // request may have been billed; do not retry blindly
-      throw new Error('API request failed or timed out; usage unknown');
+    for(let attempt=1;attempt<=2;attempt++){
+      signal.throwIfAborted();this.budget.reserve(upperUsd);
+      const id=randomUUID(),started=Date.now(),timeout=AbortSignal.timeout(timeoutMs),combined=AbortSignal.any([signal,timeout]);
+      let charged=false,retryable=true,kind='transport',status:number|undefined;
+      this.budget.diagnostic({id,model,attempt,phase:'dispatch',upperUsd,timeoutMs});
+      try {
+        const response=await this.request(url,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${key}`},body:serialized,signal:combined});
+        status=response.status;
+        if(!response.ok){
+          kind='http';retryable=status===429||status>=500;
+          if(status>=500){this.budget.boundUnknown(upperUsd);charged=true;}
+          if([401,402,403].includes(status))this.budget.fatal=true;
+          throw Error('HTTP failure');
+        }
+        kind='response_json';const out:any=await response.json();
+        const i=out?.usage?.prompt_tokens??out?.usage?.input_tokens,o=out?.usage?.completion_tokens??out?.usage?.output_tokens;
+        if(!Number.isFinite(i)||!Number.isFinite(o)||i<0||o<0){kind='missing_usage';throw Error('Missing usage');}
+        this.budget.record(out.usage,...rates);
+        this.budget.diagnostic({id,model,attempt,phase:'complete',elapsedMs:Date.now()-started,usd:(i*rates[0]+o*rates[1])/1e6});
+        return out;
+      }catch(error){
+        const raw=error as any, code=String(raw?.cause?.code??raw?.code??'');
+        const errorCode=/^[A-Z_0-9]{1,50}$/.test(code)?code:undefined;
+        const errorType=['Error','TypeError','AbortError','TimeoutError','SyntaxError'].includes(raw?.name)?raw.name:'Error';
+        if(kind!=='http'&&!charged){this.budget.boundUnknown(upperUsd);charged=true;}
+        if(signal.aborted){kind='cancelled';retryable=false;}else if(timeout.aborted)kind='timeout';
+        this.budget.diagnostic({id,model,attempt,phase:'error',kind,status,errorCode,errorType,elapsedMs:Date.now()-started,chargedUpperUsd:charged?upperUsd:0});
+        if(!retryable||attempt===2||this.budget.exhausted)throw Error(`API ${kind}${status?' '+status:''}; ${charged?'usage bounded conservatively':'request rejected'}`);
+      }finally{this.budget.release(upperUsd);}
+      await retryDelay(500,undefined,{signal});
     }
-    if (!response.ok) {
-      if (response.status >= 500) this.budget.unknownUsage++;
-      throw new Error(`API HTTP ${response.status}`); // never log provider response bodies/keys
-    }
-    let out: any;
-    try { out = await response.json(); } catch { this.budget.unknownUsage++; throw new Error('Invalid API JSON'); }
-    this.budget.record(out.usage, ...rates);
-    return out;
-    }finally{this.budget.release(upperUsd);}
+    throw Error('API retry limit');
   }
-  private async generate(system: string, state: unknown, signal: AbortSignal) {
+  private async generate(system: string, state: unknown, signal: AbortSignal, timeoutMs=this.c.apiMs) {
     const out = await this.post(`${this.c.llmUrl.replace(/\/$/, '')}/chat/completions`, this.c.llmKey, {
       model: this.c.llmModel,
       ...(new URL(this.c.llmUrl).hostname === 'api.openai.com'
@@ -111,7 +128,7 @@ export class ApiBrain implements Brain {
       response_format: { type: 'json_object' },
       ...(new URL(this.c.llmUrl).hostname === 'api.deepseek.com' ? { thinking: { type: 'disabled' } } : {}),
       messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(state) }],
-    }, signal, [this.c.inputRate, this.c.outputRate]);
+    }, signal, [this.c.inputRate, this.c.outputRate],timeoutMs);
     try { return JSON.parse(out.choices[0].message.content); } catch { throw new Error('Invalid model JSON content'); }
   }
   async communicate(state:Snapshot,plan:Plan,signal:AbortSignal,execution?:{activeAction:Action|null;planPending:boolean}){
