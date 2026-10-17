@@ -1,3 +1,5 @@
+import {knownDestination} from './types.js';
+import {RecoveryMemory} from './recovery.js';
 import {craftFailure} from './craft-feedback.js';
 import {observedMovements} from './navigation.js';
 import {SpatialMemory} from './spatial-memory.js';
@@ -24,6 +26,7 @@ const { pathfinder, goals } = pathfinderPackage;
 function samePosition(a:{x:number;y:number;z:number},b:{x:number;y:number;z:number}){return a.x===b.x&&a.y===b.y&&a.z===b.z;}
 export class MineflayerWorld implements World {
   private spatial?:SpatialMemory;
+  private recovery:RecoveryMemory;private generation=0;private deathCount=0;private dead=false;
   private bot: mineflayer.Bot;
   private ready = false;
   private recipeBook = new RecipeBook();
@@ -37,17 +40,18 @@ export class MineflayerWorld implements World {
   private messages: string[] = [];
   private chatEvents:import('./social.js').ChatEvent[]=[];
   constructor(name: string, private c: Config, log: Log) {
-    const location=botMemoryLocation('--live',name,c);this.spatial=new SpatialMemory(join(location.dir,'spatial.json'),location.profile);
+    const location=botMemoryLocation('--live',name,c);this.spatial=new SpatialMemory(join(location.dir,'spatial.json'),location.profile);this.recovery=new RecoveryMemory(join(location.dir,'recovery.json'));
     this.bot = mineflayer.createBot({ host: c.host, port: c.port, version: c.version,
       customPackets: protocolOverrides(c.version),
-      username: name, auth: c.auth, profilesFolder: './runs/auth' });
+      username: name, auth: c.auth, respawn:true, profilesFolder: './runs/auth' });
     this.bot.loadPlugin(pathfinder);
     // The full declare_recipes catalog is intentionally never added to observations.
     this.bot._client.on('unlock_recipes', packet => this.recipeBook.apply(packet));
     this.bot.on('spawn', () => {
+      this.generation++;this.dead=false;this.memory.clear();this.visible=[];this.containers=[];this.combatEvidence.clear();this.incomingDamage.clear();
       const movement = observedMovements(this.bot,this.memory);
       this.bot.pathfinder.setMovements(movement); this.ready = true;
-      log('spawn');
+      this.recovery.respawn(this.snapshot());log('spawn',{generation:this.generation});
     });
     this.bot.on('health',()=>this.incomingDamage.health(this.bot.health,Date.now()));
     // Raw damage_event distinguishes source attribution from duplicate hurt animations.
@@ -61,7 +65,7 @@ export class MineflayerWorld implements World {
       if(entity)this.combatEvidence.hurt(entity.id,packet.sourceCauseId===this.bot.entity?.id+1,this.entityVisible(entity),Date.now());
     });
     this.bot.on('entityDead',entity=>{if(entity&&this.entityVisible(entity))this.combatEvidence.death(entity.id,Date.now());});
-    this.bot.on('death', () => { this.ready = false; this.stop(); log('death'); });
+    this.bot.on('death', () => { const death=this.recovery.death(this.snapshot());this.deathCount++;this.dead=true;this.ready=false;this.stop();log('death',{death}); });
     this.bot.on('end', () => { this.saveSpatial(true); this.ready = false; this.recipeBook.reset(); this.memory.clear(); this.containers=[]; this.visible=[]; this.combatEvidence.clear();this.incomingDamage.clear(); log('disconnected'); });
     this.bot.on('kicked', () => { this.ready = false; log('kicked'); });
     this.bot.on('error', () => log('connection_error')); // no raw credentials/packets
@@ -470,6 +474,7 @@ export class MineflayerWorld implements World {
     }))] : [];
     return { visibleItems:this.ready?this.visibleItems():[],placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
       vision: {yaw:this.bot.entity?.yaw ?? 0,pitch:this.bot.entity?.pitch ?? 0,blocks:summarizePlaces(structuredClone(this.visible))}, places:summarizePlaces(this.knownPlaces()),craftable,
+      dimension:String(this.bot.game?.dimension??'unknown'),environment:{inWater:!!(this.bot.entity as any)?.isInWater,inLava:!!(this.bot.entity as any)?.isInLava,onGround:!!this.bot.entity?.onGround,oxygen:(this.bot as any).oxygenLevel},lifecycle:{generation:this.generation,deathCount:this.deathCount,phase:this.dead?'dead':this.ready?'alive':'connecting',lastDeath:this.recovery.context().deaths.at(-1)},recovery:this.recovery.context(),
       ready: this.ready, health: this.bot.health ?? 0, food: this.bot.food ?? 0, logs,
       canMine: this.ready && this.visible.some(b=>!['bedrock','water','lava','air'].includes(b.name)), canDeposit: this.ready && this.bot.inventory.items().length>0 && this.visible.some(b=>['chest','furnace','blast_furnace','smoker'].includes(b.name)),
       canEat: this.ready && (this.bot.food ?? 20) < 20 && !!this.food(),
@@ -494,7 +499,7 @@ export class MineflayerWorld implements World {
       }
       if (action === 'move') {
         const p=plan?.destination;
-        if (!p || !this.knownPlaces().some(b=>b.position.x===p.x&&b.position.y===p.y&&b.position.z===p.z)) throw new Error('Destination not observed');
+        if (!p || !knownDestination({places:this.knownPlaces(),dimension:String(this.bot?.game?.dimension??''),recovery:this.recovery?.context()},p)) throw new Error('Destination not observed');
         await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2),signal);
         this.observe(true);
       }

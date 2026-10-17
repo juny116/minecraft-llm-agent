@@ -44,7 +44,7 @@ export class GoalBook{
   if(changed){next.revisions=next.revisions.slice(-128);next.revision++;this.persist(next);}
  }
  review(s:Snapshot,userRequest:string|null):GoalReview{
-  const observation=this.evidence('observation',{...compact(s),vision:s.vision,nearbyPlayers:s.nearbyPlayers,chatEvents:s.chatEvents});
+  const observation=this.evidence('observation',{...compact(s),recovery:s.recovery,dimension:s.dimension,vision:s.vision,nearbyPlayers:s.nearbyPlayers,chatEvents:s.chatEvents});
   const operator=this.evidence('operator',{request:userRequest});
   // Always include the source facts for existing intentions, plus recent action evidence.
   const referenced=new Set(this.data.goals.flatMap(g=>g.evidenceIds));

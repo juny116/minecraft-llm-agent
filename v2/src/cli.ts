@@ -1,3 +1,4 @@
+import {RecoveryMemory} from './recovery.js';
 import {GoalBook} from './goals.js';
 import {SocialMemory} from './social.js';
 import {botMemoryLocation,openBotMemory} from './experience-memory.js';
@@ -6,7 +7,7 @@ import { createInterface } from 'node:readline';
 import { applyCommand } from './control.js';
 import { join } from 'node:path';
 import { config } from './config.js';
-import { ApiBrain, Budget, MockBrain } from './providers.js';
+import { ApiBrain, Budget, LayeredMockBrain } from './providers.js';
 import { MockWorld } from './mock.js';
 import { Runtime } from './runtime.js';
 import type { Log, World } from './types.js';
@@ -18,7 +19,7 @@ async function main() {
   if (mode !== '--mock' && (!c.llmKey || (c.mode === 'jev' && !c.jevKey)))
     throw new Error('Set LLM_API_KEY and (for jev mode) JEV_API_KEY in v2/.env');
   const budget = new Budget(c.maxCalls, c.maxUsd);
-  const brain = mode === '--mock' ? new MockBrain() : new ApiBrain(c, budget);
+  const brain = mode === '--mock' ? new LayeredMockBrain() : new ApiBrain(c, budget);
   if (mode === '--api-check') {
     const state = new MockWorld().snapshot(); const signal = AbortSignal.timeout(c.apiMs * 2);
     const plan = await brain.plan(state, [], signal);
@@ -44,7 +45,7 @@ async function main() {
     const experience=openBotMemory(mode,name,c);
     const world: World = mode === '--mock' ? new MockWorld(shared)
       : new (await import('./mineflayer.js')).MineflayerWorld(name, c, log);
-    const runtime = new Runtime(world, brain, { planMs: c.planMs, actionMs: c.actionMs, minConfidence: c.minConfidence, goals:new GoalBook(join(botMemoryLocation(mode,name,c).dir,'goals.json'),botMemoryLocation(mode,name,c).profile), social:new SocialMemory(name,join(botMemoryLocation(mode,name,c).dir,'social.json')),memory:experience,selectorKind:mode==='--mock'?'mock':c.mode }, log);
+    const runtime = new Runtime(world, brain, { selectorMs:c.tickMs,longPlanMs:c.longPlanMs,reflectionMs:c.reflectionMs,socialMs:c.socialMs,recovery:new RecoveryMemory(join(botMemoryLocation(mode,name,c).dir,'recovery.json')),planMs: c.planMs, actionMs: c.actionMs, minConfidence: c.minConfidence, goals:new GoalBook(join(botMemoryLocation(mode,name,c).dir,'goals.json'),botMemoryLocation(mode,name,c).profile), social:new SocialMemory(name,join(botMemoryLocation(mode,name,c).dir,'social.json')),memory:experience,selectorKind:mode==='--mock'?'mock':c.mode }, log);
     const memory = join('runs/memory', `${mode.slice(2)}-${name}.json`);
     if (existsSync(memory)) {
       try { const old = JSON.parse(readFileSync(memory, 'utf8')); runtime.history = Array.isArray(old) ? old.filter(x => typeof x === 'string').slice(-20) : []; }

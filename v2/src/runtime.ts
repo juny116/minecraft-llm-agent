@@ -1,3 +1,5 @@
+import {executionOptions,executionIdentity,type SupervisorInput} from './supervision.js';
+import {RecoveryMemory} from './recovery.js';
 import {reachedCell} from './reach.js';
 import {supportsFeet} from './building.js';
 import {RetryPolicy} from './retry-policy.js';
@@ -8,7 +10,7 @@ import type {SocialMemory} from './social.js';
 import type {ExperienceMemory} from './experience-memory.js';
 import { candidates, hasMiningTool, type Action, type Brain, type Decision, type Log, type Plan, type Snapshot, type World } from './types.js';
 import {Journal,compact,changes,classify,completed,type PlanningContext,type Outcome} from './planning.js';
-export type RuntimeOptions = { planMs: number; actionMs: number; minConfidence: number; selectorKind?: string; memory?:ExperienceMemory; social?:SocialMemory; reflectionEnabled?:boolean; goals?:GoalBook };
+export type RuntimeOptions = { selectorMs?:number;longPlanMs?:number;reflectionMs?:number;socialMs?:number;decisionTtlMs?:number;recovery?:RecoveryMemory; planMs: number; actionMs: number; minConfidence: number; selectorKind?: string; memory?:ExperienceMemory; social?:SocialMemory; reflectionEnabled?:boolean; goals?:GoalBook };
 export class Runtime {
  plan:Plan={goal:'Observe before acting',preferred:'idle'};
  history:string[]=[];
@@ -45,8 +47,8 @@ export class Runtime {
  private lastIdle?:{key:string;at:number};
  private lifetime=new AbortController();
  private actionController?:AbortController;
- constructor(readonly world:World,private brain:Brain,private options:RuntimeOptions,private log:Log){}
- private observation(){const s=this.world.snapshot();if(this.options.memory)s.memoryGuidance=this.options.memory.retrieve(s);if(this.options.social){this.options.social.ingest(s.chatEvents??[]);s.social=this.options.social.context();}return s;}
+ constructor(readonly world:World,private brain:Brain,private options:RuntimeOptions,private log:Log){if(brain.supervise){options.goals??=new GoalBook();options.recovery??=new RecoveryMemory();}}
+ private observation(){const s=this.world.snapshot();if(this.options.recovery)s.recovery=this.options.recovery.context();if(this.options.memory)s.memoryGuidance=this.options.memory.retrieve(s);if(this.options.social){this.options.social.ingest(s.chatEvents??[]);s.social=this.options.social.context();}return s;}
  private async converse(s:Snapshot,now:number){
   const social=this.options.social;if(!social||!this.brain.communicate||this.socialPending||this.closed||now-this.lastSocial<8000||s.enemies?.length||!s.ready)return;
   const context=s.social??social.context();
@@ -63,7 +65,7 @@ export class Runtime {
  }
  async reflectMemory(force=false,urgent=false){
   const memory=this.options.memory;if(this.options.reflectionEnabled===false||this.closed||this.reflectionPending||!memory||!this.brain.reflect||!memory.pending())return;
-  if(!force&&(Date.now()-this.lastReflection<30000||(!urgent&&memory.pending()<4)))return;
+  if(!force&&(Date.now()-this.lastReflection<(this.options.reflectionMs??60000)||(!urgent&&memory.pending()<4)))return;
   this.reflectionPending=true;this.lastReflection=Date.now();
   try{const input=memory.reflection(),updates=await this.brain.reflect(input,this.lifetime.signal);
    if(!this.closed&&!this.lifetime.signal.aborted){memory.apply(input,updates,this.brain.reflectionModel);this.log('memory_reflected',{through:input.through});}
@@ -73,7 +75,7 @@ export class Runtime {
  get planning():PlanningContext {return structuredClone({blockedInteractions:this.retries.context(),observationStreak:this.observationStreak,...(this.plannerFeedback?{plannerFeedback:this.plannerFeedback}:{}),userRequest:this.assignedGoal,...(this.options.goals?{goalState:this.options.goals.snapshot()}:{}),longTermGoal:this.longGoal,mediumTerm:this.medium,replanReasons:[...this.reasons],recentActions:this.journal.recent,olderSummary:this.journal.older,failureStreak:this.failureStreak});}
  setGoal(goal:string|null){
   if(this.closed)return;const next=goal?.trim()||null;if(next===this.assignedGoal)return;
-  this.assignedGoal=next;this.options.goals?.pause('operator request changed; re-evaluate intention');this.longGoal=this.options.goals?null:next;this.medium={summary:'Observe and replan',steps:[],activeStep:0};
+  this.assignedGoal=next;this.longGeneration++;this.longRequested=true;this.longRetryAt=0;this.supervisorUrgent=true;this.options.goals?.pause('operator request changed; re-evaluate intention');this.longGoal=this.options.goals?null:next;this.medium={summary:'Observe and replan',steps:[],activeStep:0};
   this.plan={goal:'Observe and replan',preferred:'idle',userRequest:next};this.planVersion++;this.failureStreak=0;this.failureKey='';this.retryAfter=0;
   this.invalidate('user goal changed');this.log('user_goal',{userGoal:next});
  }
@@ -89,7 +91,7 @@ export class Runtime {
   if(!step||!completed(step,s,successfulAction))return;
   this.log('step_completed',{id:step.id,completion:step.completion,evidence:compact(s)});
   this.medium.activeStep++;this.planVersion++;this.activateStep();
-  this.requestPlan(this.medium.activeStep===this.medium.steps.length?'medium_plan_completed':'step_completed');
+  if(!this.brain.supervise||this.medium.activeStep===this.medium.steps.length)this.requestPlan(this.medium.activeStep===this.medium.steps.length?'medium_plan_completed':'step_completed');
  }
  refreshPlan(now=Date.now()):Promise<void>|undefined {
   if(this.closed||this.planPending||this.actionPending||now<this.retryAfter||(!this.reasons.size&&now-this.lastPlan<this.options.planMs))return;
@@ -134,7 +136,7 @@ export class Runtime {
   }).finally(()=>{this.planPending=false;});
  }
  async tick(now=Date.now()){
-  if(this.closed)return;const s=this.observation();
+  if(this.closed)return;if(this.brain.supervise)return this.tickContinuous(now);const s=this.observation();
   if((this.activeAction==='flee'||this.activeAction==='attack')&&s.ready&&s.health>0)return;
   const messages=s.messages.join('\n');
   if(s.ready!==this.lastReady){
@@ -194,9 +196,9 @@ export class Runtime {
   this.log('action_record',{record});
   if(!this.closed)void this.reflectMemory(false,outcome==='failed'||(decision.action==='attack'&&outcome==='succeeded'));
  }
- private async run(decision:Decision,options:Action[],source:'selector'|'local_safety',observed?:Snapshot){
+ private async run(decision:Decision,options:Action[],source:'selector'|'local_safety',observed?:Snapshot,executionPlan?:Plan){
   if(this.actionPending||this.closed)return;
-  const action=decision.action,before=this.world.snapshot(),context=this.planning,version=this.planVersion,plan=structuredClone(this.plan),startedAt=Date.now();
+  const action=decision.action,before=this.world.snapshot(),context=this.planning,version=this.planVersion,plan=structuredClone(executionPlan??this.plan),startedAt=Date.now();
   this.actionPending=true;this.activeAction=action;
   const controller=new AbortController();this.actionController=controller;
   const signal=AbortSignal.any([controller.signal,this.lifetime.signal,AbortSignal.timeout(action==='mine'?(plan.mine?.maxMs??30000)+this.options.actionMs+2500:this.options.actionMs)]);
@@ -212,7 +214,7 @@ export class Runtime {
     if(this.knownViews.size>4096)this.knownViews.clear();
    }else if(outcome==='succeeded'&&action!=='idle')this.observationStreak=0;
    this.record(decision,options,source,version,context,before,after,outcome,result,startedAt,observed??before);this.note(result);
-   if(version===this.planVersion&&!this.closed){
+   if(version===this.planVersion&&!this.closed&&(!executionPlan||JSON.stringify(executionPlan)===JSON.stringify(this.plan))){
     const key=JSON.stringify({action,step:context.mediumTerm.steps[context.mediumTerm.activeStep]?.id,craft:plan.craft,destination:plan.destination,container:plan.container,transfer:plan.transfer,build:plan.build,mine:plan.mine,pickup:plan.pickup,equip:plan.equip});
     if(action==='give'&&outcome==='partial')this.requestPlan('delivery_receipt_unconfirmed_do_not_repeat');
     if(outcome==='failed'||outcome==='partial'){
@@ -222,6 +224,122 @@ export class Runtime {
    }
    this.actionPending=false;this.activeAction=undefined;this.actionController=undefined;
   }
+ }
+ private supervisorAt=-Infinity;
+ private supervisorUrgent=true;
+ private longPending=false;
+ private longLast=-Infinity;
+ private longRequested=true;
+ private longRetryAt=0;
+ private longGeneration=0;
+ private executionId=0;
+ private executionStarted=0;
+ private executionPlan?:Plan;
+ private executionObserved?:Snapshot;
+ private executionTask?:Promise<void>;
+ private lastLifeKey='';
+ private lastDeathId='';
+ private previouslyDead=false;
+ private lastAlive?:Snapshot;
+ private healthBefore=20;
+ private newLife(s:Snapshot){
+  const dead=s.lifecycle?s.lifecycle.phase==='dead':s.health<=0&&(s.ready||!!this.lastAlive),key=s.lifecycle?String(s.lifecycle.generation):String(s.ready);
+  if(!s.ready&&this.lastReady&&!dead){this.invalidate('disconnected');this.longGeneration++;this.options.goals?.pause('Disconnected; review after reconnect');this.longRequested=true;this.longRetryAt=0;}
+  const death=s.lifecycle?.lastDeath;
+  if(death&&death.id!==this.lastDeathId){this.lastDeathId=death.id;this.options.recovery!.acceptDeath(death);this.longRequested=true;this.log('death_memory',{deathId:death.id});}
+  if(dead&&!this.previouslyDead){if(!death){const d=this.options.recovery!.death(this.lastAlive??s);this.lastDeathId=d.id;}this.invalidate('death');this.longGeneration++;this.options.goals?.pause('Death; inspect respawn inventory and reconsider recovery');this.longGoal=null;this.longRequested=true;this.longRetryAt=0;this.plan={goal:'Review survival after death',preferred:'idle'};this.medium={summary:'Await respawn observations',steps:[],activeStep:0};this.planVersion++;}
+  if(s.ready&&!dead&&(this.previouslyDead||key!==this.lastLifeKey||!this.lastReady)){
+   this.invalidate('spawn or reconnect');this.longGeneration++;this.options.recovery!.respawn(s);this.options.goals?.pause('New life or reconnect: review current inventory and historical death uncertainty');this.longGoal=null;this.longRequested=true;this.longRetryAt=0;this.plan={goal:'Inspect current surroundings while reviewing intentions',preferred:'look'};this.medium={summary:'Review intentions',steps:[],activeStep:0};this.planVersion++;this.supervisorUrgent=true;
+  }
+  this.previouslyDead=dead;this.lastLifeKey=key;this.lastReady=s.ready;if(s.ready&&!dead)this.lastAlive=structuredClone(s);
+ }
+ private refreshLong(s:Snapshot,now:number){
+  if(!this.brain.reviewGoals||this.longPending||!s.ready||s.health<=0||now<this.longRetryAt)return;
+  if(!this.longRequested&&now-this.longLast<(this.options.longPlanMs??180000))return;
+  if(!this.options.goals?.needsReview&&now-this.longLast<30000)return;
+  this.longPending=true;this.longRequested=false;this.longLast=now;
+  const generation=this.longGeneration,context=this.planning;context.goalReview=this.options.goals!.review(s,this.userGoal);
+  void this.brain.reviewGoals(s,context,this.lifetime.signal).then(p=>{
+   if(this.closed||generation!==this.longGeneration||!this.world.snapshot().ready)return;
+   if(p.recoveryDecision){const d=p.recoveryDecision;if(!this.options.recovery!.context().deaths.some(x=>x.id===d.deathId)||!['recover','prepare','defer','abandon'].includes(d.strategy)||!d.reason?.trim()||d.reason.length>500)throw Error('Invalid recovery intention');}
+   this.options.goals!.apply(context.goalReview!,p.goalUpdates,p.activeGoalId);
+   if(p.recoveryDecision){const d=p.recoveryDecision;this.options.recovery!.decide(d.deathId,d.strategy,d.reason);}
+   const next=this.options.goals!.snapshot().activeGoal?.description??null;
+   if(next!==this.longGoal){this.longGoal=next;this.plan={goal:next??'Observe or wait',preferred:'idle'};this.medium={summary:'Create medium plan under revised intention',steps:[],activeStep:0};this.planVersion++;this.supervisorUrgent=true;}
+   this.requestPlan('long_goal_reviewed');this.log('goals_reviewed',{goals:this.options.goals!.snapshot(),recovery:p.recoveryDecision});
+  }).catch(()=>{if(!this.closed){this.longRequested=true;this.longRetryAt=Date.now()+10000;this.log('long_planner_error');}}).finally(()=>{this.longPending=false;});
+ }
+ private refreshMedium(s:Snapshot,now:number){
+  if(this.planPending||!s.ready||s.health<=0||!this.longGoal||this.options.goals?.needsReview||now<this.retryAfter)return;
+  if(now-this.lastPlan<5000||!this.reasons.size&&now-this.lastPlan<this.options.planMs)return;
+  this.planPending=true;this.lastPlan=now;const generation=this.longGeneration,goal=this.longGoal,context=this.planning;delete context.goalReview;this.reasons.clear();
+  void this.brain.plan(s,this.history.slice(-8),this.lifetime.signal,this.userGoal,context).then(p=>{
+   if(this.closed||generation!==this.longGeneration||goal!==this.longGoal)return;
+   // Only replace intentions. An ongoing executor retains its immutable plan until JEV changes it.
+   this.plan={...p,longTermGoal:this.longGoal??undefined};delete this.plan.goalUpdates;delete this.plan.activeGoalId;
+   this.medium={summary:p.goal,steps:structuredClone(p.steps??[]),activeStep:0};this.planVersion++;if(this.medium.steps.length)this.activateStep();
+   this.plannerFeedback=undefined;this.supervisorUrgent=true;this.log('plan',{plan:this.plan,scope:'medium'});
+  }).catch(()=>{if(!this.closed){this.requestPlan('medium_plan_error');this.retryAfter=Date.now()+10000;this.log('planner_error');}}).finally(()=>{this.planPending=false;});
+ }
+ private async converseQueued(s:Snapshot,now:number){
+  const social=this.options.social;if(!social||!this.brain.communicate||this.socialPending||!social.canSpeak(now))return;
+  const inbox=social.addressed(),newWork=this.journal.recent.at(-1)?.id??0;
+  const key=JSON.stringify([inbox.map(m=>m.id),newWork,s.nearbyPlayers?.map(p=>p.name)]);
+  if(!inbox.length&&(now-this.lastSocial<(this.options.socialMs??30000)||key===this.lastSocialKey||!s.nearbyPlayers?.length))return;
+  if(inbox.length&&now-this.lastSocial<1500)return;
+  this.socialPending=true;this.lastSocial=now;this.lastSocialKey=key;
+  const life=this.longGeneration,ids=inbox.map(m=>m.id),original=compact(s),action=this.activeAction;
+  try{
+   const speech=await this.brain.communicate({...s,social:social.context()},this.plan,this.lifetime.signal,{activeAction:action??null,planPending:this.planPending});
+   if(this.closed||life!==this.longGeneration)return;
+   if(!speech){social.handled(ids);this.log('social_silence');return;}
+   const fresh=this.world.snapshot();
+   if(!fresh.ready)return;
+   // Questions/replies can survive unrelated actions. Factual progress reports must still match.
+   if(speech.kind==='report'||speech.promise?.status==='completed'){
+    const current=compact(fresh);if(this.activeAction!==action||JSON.stringify([current.inventory,current.health,current.food,current.position])!==JSON.stringify([original.inventory,original.health,original.food,original.position])){this.log('social_discarded',{reason:'reported facts changed'});return;}
+   }
+   if(ids.length&&(!speech.replyTo||!ids.includes(speech.replyTo))){this.log('social_discarded',{reason:'reply must identify pending message'});return;}
+   if(speech.aliases?.length)social.rememberAliases(speech.aliases);
+   const result=social.send(speech,t=>this.world.chat(t),Date.now(),JSON.stringify([original.inventory,original.health,original.food]));
+   if(result.sent){social.handled(speech.replyTo?[speech.replyTo]:[]);if(speech.promise||['accept','decline'].includes(speech.kind))this.requestPlan('conversation commitment');}
+   this.log('social_speech',result);
+  }catch{if(!this.closed)this.log('social_error');}finally{this.socialPending=false;}
+ }
+ private async tickContinuous(now:number){
+  const s=this.observation();this.newLife(s);s.recovery=this.options.recovery!.context();
+  if(!s.ready||s.health<=0)return;
+  const enemyKey=JSON.stringify(s.enemies?.map(e=>e.id)??[]);
+  if(enemyKey!==this.lastEnemies||s.health<this.healthBefore){this.supervisorUrgent=true;this.lastEnemies=enemyKey;}
+  this.healthBefore=s.health;
+  this.refreshLong(s,now);this.refreshMedium(s,now);void this.reflectMemory();void this.converseQueued(s,now);
+  if(!this.actionPending)this.checkStep(s);
+  if(this.decisionPending||!this.supervisorUrgent&&now-this.supervisorAt<(this.options.selectorMs??1000))return;
+  this.supervisorUrgent=false;this.supervisorAt=now;this.decisionPending=true;
+  const life=this.longGeneration,execId=this.executionId,started=Date.now();
+  const options=executionOptions(s,this.plan).filter(o=>!this.retries.blocked(o.action,o.plan,s));
+  const inbox=this.options.social?.pendingRouting(now)??[];
+  const input:SupervisorInput={options,execution:this.actionPending?{id:execId,action:this.activeAction!,plan:this.executionPlan!,elapsedMs:Date.now()-this.executionStarted,observedChanges:this.executionObserved?changes(compact(this.executionObserved),compact(s)):undefined,interruptionNote:this.activeAction==='mine'?'Interrupting mining can lose accumulated digging progress':'Switching cancels the current local execution'}:null,inbox,goal:this.longGoal,recovery:s.recovery};
+  try{
+   const d=await this.brain.supervise!(s,input,this.lifetime.signal);
+   if(this.closed||life!==this.longGeneration)return;
+   // Routing belongs to message IDs, not movement state. Preserve new arrivals in the queue.
+   for(const m of inbox)if(d.routes[m.id])this.options.social?.route(m.id,d.routes[m.id]);
+   if(d.review==='long')this.longRequested=true;else if(d.review==='medium')this.requestPlan('selector requested review');
+   const fresh=this.world.snapshot();
+   if(!fresh.ready||fresh.health<=0||Date.now()-started>(this.options.decisionTtlMs??5000)||execId!==this.executionId){this.log('decision_discarded');return;}
+   if(fresh.health<s.health||JSON.stringify(fresh.enemies?.map(e=>e.id)??[])!==enemyKey){this.supervisorUrgent=true;this.log('decision_discarded',{reason:'threat changed'});return;}
+   if(d.choice==='continue'){this.log('execution_continue',{executionId:execId});return;}
+   const selected=d.choice==='wait'?{id:'wait',action:'idle' as Action,plan:{goal:'Intentional wait',preferred:'idle' as Action}}:options.find(o=>o.id===d.choice);
+   if(!selected||!candidates(fresh,selected.plan).includes(selected.action))return;
+   if(this.actionPending&&this.activeAction===selected.action&&executionIdentity(this.activeAction!,this.executionPlan!)===executionIdentity(selected.action,selected.plan))return;
+   if(this.actionPending){this.actionController?.abort();this.world.stop();await this.executionTask;}
+   if(this.closed||life!==this.longGeneration||!candidates(this.world.snapshot(),selected.plan).includes(selected.action))return;
+   this.log('decision',{action:selected.action,confidence:d.confidence,control:'start_or_switch'});
+   this.executionId++;this.executionStarted=Date.now();this.executionPlan=structuredClone(selected.plan);this.executionObserved=structuredClone(fresh);
+   this.executionTask=this.run({action:selected.action,confidence:d.confidence},options.map(o=>o.action),'selector',fresh,selected.plan);
+   void this.executionTask.catch(()=>this.log('execution_error'));
+  }catch{if(!this.closed)this.log('decision_error');}finally{this.decisionPending=false;}
  }
  close(drainModels=false){this.closed=true;this.epoch++;if(!drainModels)this.lifetime.abort();this.actionController?.abort();this.world.stop();this.world.close();}
 }
