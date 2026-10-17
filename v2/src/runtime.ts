@@ -37,6 +37,10 @@ export class Runtime {
  private reflectionPending=false;
  private lastReflection=-Infinity;
  private planPending=false;
+ private mediumChain=0;
+ private continuationEpoch=0;
+ private prefetchAttemptedTail?:string;
+ private lastPrefetch=-Infinity;
  private plannerFeedback?:string;
  private longPlannerFeedback?:string;
  private decisionPending=false;
@@ -85,7 +89,7 @@ export class Runtime {
  }
  note(result:string){this.history=[...this.history,result].slice(-20);this.log('result',{result});}
  private requestPlan(reason:string){this.reasons.add(reason);}
- invalidate(reason:string){this.epoch++;this.requestPlan(reason);this.actionController?.abort();this.world.stop();this.log('invalidate',{reason});}
+ invalidate(reason:string){this.epoch++;this.continuationEpoch++;this.requestPlan(reason);this.actionController?.abort();this.world.stop();this.log('invalidate',{reason});}
  private activateStep(){
   const step=this.medium.steps[this.medium.activeStep];
   this.plan={...this.plan,activeStepId:step?.id,preferred:step?.action??'idle',destination:step?.destination,craft:step?.craft,look:step?.look,container:step?.container,transfer:step?.transfer,build:step?.build,mine:step?.mine,pickup:step?.pickup,equip:step?.equip};
@@ -212,6 +216,7 @@ export class Runtime {
    const known=e instanceof Error && /^(No |Log |Equipment |Deposit |Eating |Crafting |Missing |Insufficient |Destination |Player |Unknown item|Invalid crafting|Placement |Withdrawal |Transfer |Invalid transfer|Invalid block|Block )/.test(e.message)?e.message.slice(0,180):`Action ${action} ${signal.reason?.name==='TimeoutError'?'timed out':outcome}`;result=known;}
   finally{
    const after=this.world.snapshot();
+   if(!['idle','look'].includes(action)&&outcome!=='succeeded')this.continuationEpoch++;
    this.retries.record(action,plan,after,outcome==='failed'||outcome==='partial',result);
    if(action==='look'){this.lastLookAt=Date.now();let novel=0;for(const b of after.vision?.blocks??[]){const k=JSON.stringify([b.name,b.position]);if(!this.knownViews.has(k))novel++;this.knownViews.add(k);}
     this.observationStreak=novel?0:this.observationStreak+1;if(this.observationStreak===4||this.observationStreak%20===0)this.requestPlan('repeated_observation_without_new_information_choose_meaningful_action');
@@ -230,7 +235,7 @@ export class Runtime {
   }
  }
  private lastSelection:{action:Action|'continue';at:number}|null=null;
- get executionStatus(){return {goalValidationFailures:this.longValidationFailures,progress:this.progress.context(Date.now()),activeAction:this.activeAction??null,actionPending:this.actionPending,selectorPending:this.decisionPending,mediumPending:this.planPending,longPending:this.longPending,dialoguePending:this.socialPending,reflectionPending:this.reflectionPending,needsGoalReview:this.options.goals?.needsReview??false,hasLongGoal:!!this.longGoal,lastSelection:this.lastSelection?{...this.lastSelection}:null};}
+ get executionStatus(){return {remainingPlanSteps:Math.max(0,this.medium.steps.length-this.medium.activeStep),goalValidationFailures:this.longValidationFailures,progress:this.progress.context(Date.now()),activeAction:this.activeAction??null,actionPending:this.actionPending,selectorPending:this.decisionPending,mediumPending:this.planPending,longPending:this.longPending,dialoguePending:this.socialPending,reflectionPending:this.reflectionPending,needsGoalReview:this.options.goals?.needsReview??false,hasLongGoal:!!this.longGoal,lastSelection:this.lastSelection?{...this.lastSelection}:null};}
  private supervisorAt=-Infinity;
  private supervisorUrgent=true;
  private longPending=false;
@@ -280,7 +285,7 @@ export class Runtime {
    this.options.goals!.apply(context.goalReview!,p.goalUpdates,p.activeGoalId);
    if(p.recoveryDecision){const d=p.recoveryDecision;this.options.recovery!.decide(d.deathId,d.strategy,d.reason);}
    const next=this.options.goals!.snapshot().activeGoal?.description??null;
-   if(next!==this.longGoal){this.longGoal=next;this.plan={goal:next??'Observe or wait',preferred:'idle'};this.medium={summary:'Create medium plan under revised intention',steps:[],activeStep:0};this.planVersion++;this.supervisorUrgent=true;}
+   if(next!==this.longGoal){this.longGoal=next;this.plan={goal:next??'Observe or wait',preferred:'idle'};this.mediumChain++;this.medium={summary:'Create medium plan under revised intention',steps:[],activeStep:0};this.planVersion++;this.supervisorUrgent=true;}
    this.longValidationFailures=0;this.longPlannerFeedback=undefined;this.requestPlan('long_goal_reviewed');this.log('goals_reviewed',{goals:this.options.goals!.snapshot(),recovery:p.recoveryDecision});
   }).catch(error=>{if(!this.closed&&generation===this.longGeneration){
    const reason=error instanceof Error&&/^(Invalid |Missing )/.test(error.message)?error.message.slice(0,240):'Long-term review failed';
@@ -290,16 +295,34 @@ export class Runtime {
  }
  private refreshMedium(s:Snapshot,now:number){
   if(this.planPending||!s.ready||s.health<=0||!this.longGoal||this.options.goals?.needsReview||now<this.retryAfter)return;
-  if(now-this.lastPlan<5000||!this.reasons.size&&now-this.lastPlan<this.options.planMs)return;
-  this.planPending=true;this.lastPlan=now;const recoveryVersion=this.options.recovery!.outcomeVersion();const generation=this.longGeneration,goal=this.longGoal,context=this.planning;delete context.goalReview;this.reasons.clear();
+  const remaining=this.medium.steps.slice(this.medium.activeStep),tail=remaining.at(-1)?.id;
+  const tailKey=`${this.mediumChain}:${tail}`;
+  const append=remaining.length>0&&remaining.length<=2&&this.actionPending&&!['idle','look'].includes(this.activeAction!)&&[...this.reasons].every(reason=>reason==='selector requested review')&&this.prefetchAttemptedTail!==tailKey&&now-this.lastPrefetch>=5000;
+  if(!append&&(now-this.lastPlan<5000||!this.reasons.size&&now-this.lastPlan<this.options.planMs))return;
+  this.planPending=true;this.lastPlan=now;
+  const recoveryVersion=this.options.recovery!.outcomeVersion(),generation=this.longGeneration,goal=this.longGoal,chain=this.mediumChain,epoch=this.continuationEpoch,context=this.planning;
+  delete context.goalReview;this.reasons.clear();
+  if(append){this.lastPrefetch=now;this.prefetchAttemptedTail=tailKey;context.mediumRequest={mode:'append',remainingSteps:structuredClone(remaining),activeAction:this.activeAction??null};this.log('plan_prefetch_started',{chain,remaining:remaining.length});}
   void this.brain.plan(s,this.history.slice(-8),this.lifetime.signal,this.userGoal,context).then(p=>{
    if(this.closed||generation!==this.longGeneration||goal!==this.longGoal)return;
    this.reconcileRecovery(this.world.snapshot());if(recoveryVersion!==this.options.recovery!.outcomeVersion()){this.requestPlan('recovery_outcome_changed');return;}
+   if(append){
+    if(chain!==this.mediumChain||epoch!==this.continuationEpoch){this.log('plan_prefetch_discarded',{reason:'chain or execution outcome changed'});return;}
+    const additions=p.steps??[];
+    if(!additions.length){this.log('plan_prefetch_empty');return;}
+    if(additions.some(step=>remaining.some(old=>old.id===step.id)))throw Error('Invalid continuation: return only NEW steps after remainingSteps, with new IDs');
+    // Preserve the active plan and executor; only extend its ordered tail.
+    const unfinished=this.medium.steps.slice(this.medium.activeStep),exhausted=!unfinished.length;
+    this.medium.steps=[...unfinished,...structuredClone(additions)];this.medium.activeStep=0;
+    if(exhausted){this.planVersion++;this.activateStep();this.supervisorUrgent=true;this.reasons.delete('medium_plan_completed');}
+    this.plannerFeedback=undefined;this.log('plan_prefetched',{added:additions.length,remaining:this.medium.steps.length,exhausted});return;
+   }
    // Only replace intentions. An ongoing executor retains its immutable plan until JEV changes it.
+   this.mediumChain++;this.prefetchAttemptedTail=undefined;
    this.plan={...p,longTermGoal:this.longGoal??undefined};delete this.plan.goalUpdates;delete this.plan.activeGoalId;
    this.medium={summary:p.goal,steps:structuredClone(p.steps??[]),activeStep:0};this.planVersion++;if(this.medium.steps.length)this.activateStep();
    this.plannerFeedback=undefined;this.supervisorUrgent=true;this.log('plan',{plan:this.plan,scope:'medium'});
-  }).catch(error=>{if(!this.closed){const reason=error instanceof Error&&/^(Invalid |Missing )/.test(error.message)?error.message.slice(0,240):'Medium plan failed';this.plannerFeedback=reason;this.requestPlan('medium_plan_error');this.retryAfter=Date.now()+10000;this.log('planner_error',{reason});}}).finally(()=>{this.planPending=false;});
+  }).catch(error=>{if(!this.closed&&generation===this.longGeneration){const reason=error instanceof Error&&/^(Invalid |Missing )/.test(error.message)?error.message.slice(0,240):'Medium plan failed';this.plannerFeedback=reason;this.requestPlan('medium_plan_error');this.retryAfter=Date.now()+10000;this.log('planner_error',{reason});}}).finally(()=>{this.planPending=false;});
  }
  private socialFeedback?:string;
  private socialRetryAt=0;
