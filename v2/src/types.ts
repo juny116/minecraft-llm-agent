@@ -42,7 +42,7 @@ export interface World {
 export type Log = (event: string, fields?: Record<string, unknown>) => void;
 export type Decision = { action: Action; confidence: number };
 export interface Brain {
-  reviewGoals?(state:Snapshot,context:import('./planning.js').PlanningContext,signal:AbortSignal):Promise<{goalUpdates:import('./goals.js').GoalDraft[];activeGoalId:string|null;recoveryDecision?:{deathId:string;strategy:'recover'|'prepare'|'defer'|'abandon';reason:string}}>;
+  reviewGoals?(state:Snapshot,context:import('./planning.js').PlanningContext,signal:AbortSignal):Promise<{goalUpdates:import('./goals.js').GoalDraft[];activeGoalId:string|null;recoveryDecision?:{deathId:string;strategy:'recover'|'prepare'|'defer'|'abandon'|'resolved';reason:string}}>;
   supervise?(state:Snapshot,input:import('./supervision.js').SupervisorInput,signal:AbortSignal):Promise<import('./supervision.js').Supervision>;
   communicate?(state:Snapshot,plan:Plan,signal:AbortSignal,execution?:{activeAction:Action|null;planPending:boolean}):Promise<import('./social.js').Speech|null>;
   readonly reflectionModel?:string;

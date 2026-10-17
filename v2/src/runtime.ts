@@ -253,15 +253,21 @@ export class Runtime {
   }
   this.previouslyDead=dead;this.lastLifeKey=key;this.lastReady=s.ready;if(s.ready&&!dead)this.lastAlive=structuredClone(s);
  }
+ private reconcileRecovery(s:Snapshot){
+  if(this.options.recovery?.observe(s)){this.longRequested=true;this.requestPlan('recovery_outcome_changed');this.log('recovery_outcome',{recovery:this.options.recovery.context()});}
+  s.recovery=this.options.recovery?.context();
+ }
  private refreshLong(s:Snapshot,now:number){
   if(!this.brain.reviewGoals||this.longPending||!s.ready||s.health<=0||now<this.longRetryAt)return;
   if(!this.longRequested&&now-this.longLast<(this.options.longPlanMs??180000))return;
   if(!this.options.goals?.needsReview&&now-this.longLast<30000)return;
   this.longPending=true;this.longRequested=false;this.longLast=now;
+  const recoveryVersion=this.options.recovery!.outcomeVersion();
   const generation=this.longGeneration,context=this.planning;context.goalReview=this.options.goals!.review(s,this.userGoal);
   void this.brain.reviewGoals(s,context,this.lifetime.signal).then(p=>{
    if(this.closed||generation!==this.longGeneration||!this.world.snapshot().ready)return;
-   if(p.recoveryDecision){const d=p.recoveryDecision;if(!this.options.recovery!.context().deaths.some(x=>x.id===d.deathId)||!['recover','prepare','defer','abandon'].includes(d.strategy)||!d.reason?.trim()||d.reason.length>500)throw Error('Invalid recovery intention');}
+   this.reconcileRecovery(this.world.snapshot());if(recoveryVersion!==this.options.recovery!.outcomeVersion()){this.longRequested=true;this.log('plan_discarded',{reason:'recovery outcome changed'});return;}
+   if(p.recoveryDecision){const d=p.recoveryDecision;if(!this.options.recovery!.context().deaths.some(x=>x.id===d.deathId)||!['recover','prepare','defer','abandon','resolved'].includes(d.strategy)||!d.reason?.trim()||d.reason.length>500)throw Error('Invalid recovery intention');const outcome=this.options.recovery!.context().deaths.find(x=>x.id===d.deathId)?.outcome;if((d.strategy==='resolved')!==(outcome?.status==='supplies_restored'))throw Error('Invalid recovery outcome intention');}
    this.options.goals!.apply(context.goalReview!,p.goalUpdates,p.activeGoalId);
    if(p.recoveryDecision){const d=p.recoveryDecision;this.options.recovery!.decide(d.deathId,d.strategy,d.reason);}
    const next=this.options.goals!.snapshot().activeGoal?.description??null;
@@ -272,9 +278,10 @@ export class Runtime {
  private refreshMedium(s:Snapshot,now:number){
   if(this.planPending||!s.ready||s.health<=0||!this.longGoal||this.options.goals?.needsReview||now<this.retryAfter)return;
   if(now-this.lastPlan<5000||!this.reasons.size&&now-this.lastPlan<this.options.planMs)return;
-  this.planPending=true;this.lastPlan=now;const generation=this.longGeneration,goal=this.longGoal,context=this.planning;delete context.goalReview;this.reasons.clear();
+  this.planPending=true;this.lastPlan=now;const recoveryVersion=this.options.recovery!.outcomeVersion();const generation=this.longGeneration,goal=this.longGoal,context=this.planning;delete context.goalReview;this.reasons.clear();
   void this.brain.plan(s,this.history.slice(-8),this.lifetime.signal,this.userGoal,context).then(p=>{
    if(this.closed||generation!==this.longGeneration||goal!==this.longGoal)return;
+   this.reconcileRecovery(this.world.snapshot());if(recoveryVersion!==this.options.recovery!.outcomeVersion()){this.requestPlan('recovery_outcome_changed');return;}
    // Only replace intentions. An ongoing executor retains its immutable plan until JEV changes it.
    this.plan={...p,longTermGoal:this.longGoal??undefined};delete this.plan.goalUpdates;delete this.plan.activeGoalId;
    this.medium={summary:p.goal,steps:structuredClone(p.steps??[]),activeStep:0};this.planVersion++;if(this.medium.steps.length)this.activateStep();
@@ -310,7 +317,7 @@ export class Runtime {
   }catch{if(!this.closed){this.socialRetryAt=Date.now()+Math.min(60000,10000*2**Math.min(3,this.socialFailures++));this.log('social_error',{retryAfterMs:this.socialRetryAt-Date.now()});}}finally{this.socialPending=false;}
  }
  private async tickContinuous(now:number){
-  const s=this.observation();this.newLife(s);s.recovery=this.options.recovery!.context();
+  const s=this.observation();this.newLife(s);this.reconcileRecovery(s);
   if(!s.ready||s.health<=0)return;
   const enemyKey=JSON.stringify(s.enemies?.map(e=>e.id)??[]);
   if(enemyKey!==this.lastEnemies||s.health<this.healthBefore){this.supervisorUrgent=true;this.lastEnemies=enemyKey;}
