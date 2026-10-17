@@ -6,7 +6,7 @@ import type {ActionRecord} from './planning.js';
 export type ChatEvent={id:string;at:number;speaker:string;text:string};
 export type Speech={to:string;kind:'proposal'|'accept'|'decline'|'question'|'report'|'warning'|'chat';text:string;replyTo?:string;promise?:{id:string;task:string;action:Action;status:'accepted'|'cancelled'|'completed';actionEvidence?:string}};
 type PromiseRecord=NonNullable<Speech['promise']>&{sourceMessage:string;updatedAt:number};
-type SocialData={schema:1;self:string;events:ChatEvent[];promises:PromiseRecord[];actionEvidence:{id:string;at:number;action:Action;outcome:string;result:string}[]};
+type SocialData={reportKeys?:string[];schema:1;self:string;events:ChatEvent[];promises:PromiseRecord[];actionEvidence:{id:string;at:number;action:Action;outcome:string;result:string}[]};
 export function validateSpeech(s:any):Speech{
  if(!s||!['proposal','accept','decline','question','report','warning','chat'].includes(s.kind)||typeof s.to!=='string'||!/^([A-Za-z0-9_]{1,16}|all)$/.test(s.to)||typeof s.text!=='string'||!s.text.trim()||s.text.length>180||/[\r\n\u0000-\u001f\u007f]/.test(s.text)||s.text.trimStart().startsWith('/')||(s.replyTo!==undefined&&typeof s.replyTo!=='string'))throw Error('Invalid speech');
  if(s.promise){const p=s.promise;if(typeof p.id!=='string'||!/^[a-zA-Z0-9_-]{1,60}$/.test(p.id)||typeof p.task!=='string'||!p.task.trim()||p.task.length>200||!actions.includes(p.action)||!['accepted','cancelled','completed'].includes(p.status)||(p.actionEvidence!==undefined&&typeof p.actionEvidence!=='string'))throw Error('Invalid promise');}
@@ -24,10 +24,11 @@ export class SocialMemory {
  context(){return structuredClone({self:this.self,heard:this.data.events.slice(-16).map(e=>({...e,source:e.speaker===this.self?'self_statement':'heard_unverified'})),promises:this.data.promises.slice(-12),recentActionEvidence:this.data.actionEvidence.slice(-8)});}
  recordAction(r:ActionRecord){const id=randomUUID();this.data.actionEvidence.push({id,at:Date.now(),action:r.decision.action,outcome:r.outcome,result:r.result.slice(0,600)});this.save();return id;}
  canSpeak(now=Date.now()){return now-this.lastSent>=8000&&this.sent.filter(t=>now-t<60000).length<4;}
- send(raw:Speech,chat:(text:string)=>void,now=Date.now()){
+ send(raw:Speech,chat:(text:string)=>void,now=Date.now(),reportKey?:string){
   const s=validateSpeech(raw),text=((s.to==='all'?'':s.to+', ')+s.text).slice(0,180);
   this.sent=this.sent.filter(t=>now-t<60000);
   if(now-this.lastSent<8000||this.sent.length>=4||this.recentTexts.has(text))return {sent:false,reason:'rate_or_duplicate'};
+  if(s.kind==='report'&&!s.replyTo&&!s.promise&&reportKey&&this.data.reportKeys?.includes(reportKey))return {sent:false,reason:'no_new_report_evidence'};
   if(s.to===this.self)return {sent:false,reason:'self_address'};
   if(s.replyTo&&!this.data.events.some(e=>e.id===s.replyTo&&e.speaker!==this.self&&(s.to==='all'||s.to===e.speaker)))return {sent:false,reason:'unknown_reply'};
   if(['accept','decline'].includes(s.kind)&&!s.replyTo)return {sent:false,reason:'missing_reply'};
@@ -37,6 +38,7 @@ export class SocialMemory {
   const e:ChatEvent={id:randomUUID(),speaker:this.self,text,at:now};
   chat(text);this.lastSent=now;this.sent.push(now);this.recentTexts.add(text);if(this.recentTexts.size>30)this.recentTexts.delete(this.recentTexts.values().next().value!);
   this.data.events.push(e);
+  if(s.kind==='report'&&reportKey)this.data.reportKeys=[...(this.data.reportKeys??[]),reportKey].slice(-32);
   if(s.promise){this.data.promises=this.data.promises.filter(p=>p.id!==s.promise!.id);this.data.promises.push({...s.promise,sourceMessage:e.id,updatedAt:now});}
   this.save();return {sent:true,event:e};
  }

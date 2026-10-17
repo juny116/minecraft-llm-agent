@@ -73,3 +73,9 @@ test('historical mining guides reload without rewriting original episode evidenc
  const restored=new ExperienceMemory(dir,'Bob/test');assert.equal(restored.retrieve(visible())[0].scope.action,'mine');assert.equal(readFileSync(file,'utf8'),before);
  assert.throws(()=>restored.apply(restored.reflection(),[{...draft(id),scope:{...draft(id).scope,action:'gather'}}]));
 });
+
+test('reflection retrieves prior successes and failures even before any guideline exists, without skipping new episodes',t=>{
+ const {m}=fixture(t),success=m.add(record()),failure=m.add({...record(),outcome:'failed'});m.apply(m.reflection(),[]);
+ const latest=m.add(record()),input=m.reflection();assert.equal(input.through,3);assert.equal(input.episodes[0].id,latest);assert.ok(input.episodes.some(e=>e.id===success));assert.ok(input.episodes.some(e=>e.id===failure));assert.equal(new Set(input.episodes.map(e=>e.id)).size,input.episodes.length);
+ m.apply(input,[]);assert.equal(m.pending(),0);
+});

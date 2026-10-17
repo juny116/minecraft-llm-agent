@@ -1,9 +1,12 @@
+import {reachedCell} from './reach.js';
+import {supportsFeet} from './building.js';
+import {RetryPolicy} from './retry-policy.js';
 import {GoalBook} from './goals.js';
 import {readPickupResult} from './pickup.js';
 import {readMiningResult} from './mining.js';
 import type {SocialMemory} from './social.js';
 import type {ExperienceMemory} from './experience-memory.js';
-import { candidates, type Action, type Brain, type Decision, type Log, type Plan, type Snapshot, type World } from './types.js';
+import { candidates, hasMiningTool, type Action, type Brain, type Decision, type Log, type Plan, type Snapshot, type World } from './types.js';
 import {Journal,compact,changes,classify,completed,type PlanningContext,type Outcome} from './planning.js';
 export type RuntimeOptions = { planMs: number; actionMs: number; minConfidence: number; selectorKind?: string; memory?:ExperienceMemory; social?:SocialMemory; reflectionEnabled?:boolean; goals?:GoalBook };
 export class Runtime {
@@ -14,6 +17,10 @@ export class Runtime {
  private medium:PlanningContext['mediumTerm']={summary:'Observe before acting',steps:[],activeStep:0};
  private journal=new Journal();
  private reasons=new Set(['initial']);
+ private retries=new RetryPolicy();
+ private observationStreak=0;
+ private lastLookAt=0;
+ private knownViews=new Set<string>();
  private failureStreak=0;
  private failureKey='';
  private epoch=0;
@@ -50,7 +57,7 @@ export class Runtime {
   const evidence=this.evidenceVersion,version=this.planVersion,active=this.activeAction;
   try{const speech=await this.brain.communicate(s,this.plan,this.lifetime.signal,{activeAction:active??null,planPending:this.planPending});
    if(evidence!==this.evidenceVersion||version!==this.planVersion||active!==this.activeAction){this.log('social_discarded',{reason:'execution changed during speech generation'});this.lastSocialKey='';return;}
-   if(!this.closed&&speech){const result=social.send(speech,t=>this.world.chat(t));this.log('social_speech',result);if(result.sent)this.requestPlan('own social commitment or proposal');}
+   if(!this.closed&&speech){const result=social.send(speech,t=>this.world.chat(t),Date.now(),JSON.stringify({inventory:s.inventory,health:s.health,food:s.food,position:Object.fromEntries(Object.entries(s.position).map(([k,v])=>[k,Math.floor(v)])),lastAction:context.recentActionEvidence.filter(e=>e.action!=='idle'&&e.action!=='look').at(-1)?.action,lastOutcome:context.recentActionEvidence.filter(e=>e.action!=='idle'&&e.action!=='look').at(-1)?.outcome}));this.log('social_speech',result);if(result.sent)this.requestPlan('own social commitment or proposal');}
    else if(!this.closed)this.log('social_silence');
   }catch{if(!this.closed)this.log('social_error');}finally{this.socialPending=false;}
  }
@@ -63,7 +70,7 @@ export class Runtime {
   }catch{this.log('memory_reflection_error');}finally{this.reflectionPending=false;}
  }
  get userGoal(){return this.assignedGoal;}
- get planning():PlanningContext {return structuredClone({...(this.plannerFeedback?{plannerFeedback:this.plannerFeedback}:{}),userRequest:this.assignedGoal,...(this.options.goals?{goalState:this.options.goals.snapshot()}:{}),longTermGoal:this.longGoal,mediumTerm:this.medium,replanReasons:[...this.reasons],recentActions:this.journal.recent,olderSummary:this.journal.older,failureStreak:this.failureStreak});}
+ get planning():PlanningContext {return structuredClone({blockedInteractions:this.retries.context(),observationStreak:this.observationStreak,...(this.plannerFeedback?{plannerFeedback:this.plannerFeedback}:{}),userRequest:this.assignedGoal,...(this.options.goals?{goalState:this.options.goals.snapshot()}:{}),longTermGoal:this.longGoal,mediumTerm:this.medium,replanReasons:[...this.reasons],recentActions:this.journal.recent,olderSummary:this.journal.older,failureStreak:this.failureStreak});}
  setGoal(goal:string|null){
   if(this.closed)return;const next=goal?.trim()||null;if(next===this.assignedGoal)return;
   this.assignedGoal=next;this.options.goals?.pause('operator request changed; re-evaluate intention');this.longGoal=this.options.goals?null:next;this.medium={summary:'Observe and replan',steps:[],activeStep:0};
@@ -95,6 +102,12 @@ export class Runtime {
    if(this.closed||epoch!==this.epoch||evidence!==this.evidenceVersion||version!==this.planVersion||this.actionPending){
     if(!this.closed)this.requestPlan('stale_plan_needs_fresh_evidence');this.log('plan_discarded');return;
    }
+   const first=p.steps?.[0],next={...p,...first,preferred:first?.action??p.preferred};let firstProblem:string|undefined;
+   if(next.preferred!=='idle'&&!candidates(s,next).includes(next.preferred)){
+    const why=next.preferred==='move'&&next.destination&&reachedCell(s.position,next.destination,2)?'destination already reached (block-cell radius 2); choose the next useful action':next.preferred==='mine'&&next.mine&&supportsFeet(next.mine.position,s.position)?'target supports own feet; reposition before mining':next.preferred==='mine'&&next.mine&&!hasMiningTool(s,next.mine)?'requested tool/slot is not carried; choose current inventory or omit the explicit tool':next.preferred==='mine'?'target is not in CURRENT vision.blocks; look/move before mining remembered targets':'required parameters or current observed preconditions are missing';
+    firstProblem=`Invalid first action ${next.preferred}: ${why}`;
+   }
+   if(this.retries.blocked(next.preferred,next,s))firstProblem='Unchanged failed interaction: choose a different target, reposition or change the relevant conditions';
    if(this.options.goals){
     if(!context.goalReview||!Array.isArray(p.goalUpdates)||p.activeGoalId===undefined)throw Error('Missing goal review response');
     if(p.activeGoalId===null&&(p.preferred!=='idle'||p.steps?.length))throw Error('Invalid work without active goal');
@@ -107,9 +120,10 @@ export class Runtime {
     else if(this.longGoal===null||proposed===this.longGoal||p.goalRevisionReason?.trim())this.longGoal=proposed;
     else this.log('long_goal_change_rejected',{reason:'missing revision justification'});
    }
-   this.plannerFeedback=undefined;this.retryAfter=0;this.plan={...p,userRequest:this.assignedGoal,longTermGoal:this.longGoal??undefined};this.planVersion++;this.failureStreak=0;this.failureKey='';
+   this.plannerFeedback=firstProblem;this.retryAfter=firstProblem?Date.now()+4000:0;this.plan={...p,userRequest:this.assignedGoal,longTermGoal:this.longGoal??undefined};this.planVersion++;this.failureStreak=0;this.failureKey='';
    this.medium={summary:p.goal,steps:structuredClone(p.steps??[]),activeStep:0};
    if(this.medium.steps.length)this.activateStep();
+   if(firstProblem){this.requestPlan('blocked_first_action');this.log('plan_blocked',{reason:firstProblem});}
    this.log('plan',{plan:this.plan,planning:this.planning,reasons:dispatched});
    if(this.options.social&&!this.brain.communicate){
     const speech=p.speech??(p.say?{to:'all',kind:'chat' as const,text:p.say}:undefined);
@@ -134,6 +148,7 @@ export class Runtime {
   if(!s.ready||s.health<=0||(s.health<=6&&!s.enemies?.length)){this.invalidate('not ready or low health');return;}
   void this.converse(s,now);
   if(!this.actionPending)this.checkStep(s);
+  if(!this.actionPending&&this.plan.preferred!=='idle'&&!candidates(s,this.plan).includes(this.plan.preferred))this.requestPlan('planned_action_no_longer_available_in_current_observation');
   void this.refreshPlan(now);
   if(!s.enemies?.length&&s.food<14&&s.canEat){
    if(this.activeAction==='eat')return;
@@ -149,13 +164,17 @@ export class Runtime {
   const idleKey=JSON.stringify({epoch:this.epoch,version:this.planVersion,health:s.health,food:s.food,inventory:s.inventory,enemies:s.enemies,items:s.visibleItems,position:s.position,players:s.nearbyPlayers,messages:s.messages,view:s.vision?{yaw:s.vision.yaw,pitch:s.vision.pitch,blocks:s.vision.blocks.map(b=>({name:b.name,position:b.position}))}:null});
   if(!s.enemies?.length&&this.lastIdle?.key===idleKey&&now-this.lastIdle.at<5000)return;
   this.decisionPending=true;const epoch=this.epoch,version=this.planVersion;
-  const options=this.options.goals&&!this.options.goals.snapshot().activeGoal&&!s.enemies?.length?['idle' as Action]:candidates(s,this.plan),selectedContext=this.planning;
+  let options=this.options.goals&&!this.options.goals.snapshot().activeGoal&&!s.enemies?.length?['idle' as Action]:candidates(s,this.plan);
+  options=options.filter(a=>!this.retries.blocked(a,this.plan,s)&&(a!=='look'||now-this.lastLookAt>=2000));
+  if(!options.length)options=['idle'];
+  if(this.retries.blocked(this.plan.preferred,this.plan,s))this.requestPlan('unchanged_failed_interaction_requires_alternative');
+  const selectedContext=this.planning;
   try{
    const last=this.journal.recent.at(-1);
    const d=await this.brain.choose(s,{...this.plan,userRequest:this.assignedGoal,recentOutcome:last?{action:last.decision.action,outcome:last.outcome,result:last.result,changes:last.changes}:undefined},options,this.lifetime.signal);const fresh=this.world.snapshot();
    if(this.closed||epoch!==this.epoch||version!==this.planVersion||!fresh.ready||fresh.health<=0
     ||(fresh.enemies??[]).map(e=>e.id).sort((a,b)=>a-b).join(',')!==enemyKey
-    ||(!fresh.enemies?.length&&fresh.food<14&&fresh.canEat)||this.actionPending||!candidates(fresh,this.plan).includes(d.action)){
+    ||(!fresh.enemies?.length&&fresh.food<14&&fresh.canEat)||this.actionPending||!options.includes(d.action)||this.retries.blocked(d.action,this.plan,fresh)||!candidates(fresh,this.plan).includes(d.action)){
     this.record(d,options,'selector',version,selectedContext,s,fresh,'skipped','stale decision not executed',Date.now());this.log('decision_discarded');return;
    }
    if(d.confidence<this.options.minConfidence)this.log('low_confidence_observed',{confidence:d.confidence,action:d.action});
@@ -186,7 +205,13 @@ export class Runtime {
   catch(e){outcome=signal.aborted&&signal.reason?.name!=='TimeoutError'?'cancelled':'failed';
    const known=e instanceof Error && /^(No |Log |Equipment |Deposit |Eating |Crafting |Missing |Insufficient |Destination |Player |Unknown item|Invalid crafting|Placement |Withdrawal |Transfer |Invalid transfer|Invalid block|Block )/.test(e.message)?e.message.slice(0,180):`Action ${action} ${signal.reason?.name==='TimeoutError'?'timed out':outcome}`;result=known;}
   finally{
-   const after=this.world.snapshot();this.record(decision,options,source,version,context,before,after,outcome,result,startedAt,observed??before);this.note(result);
+   const after=this.world.snapshot();
+   this.retries.record(action,plan,after,outcome==='failed'||outcome==='partial',result);
+   if(action==='look'){this.lastLookAt=Date.now();let novel=0;for(const b of after.vision?.blocks??[]){const k=JSON.stringify([b.name,b.position]);if(!this.knownViews.has(k))novel++;this.knownViews.add(k);}
+    this.observationStreak=novel?0:this.observationStreak+1;if(this.observationStreak>=4)this.requestPlan('repeated_observation_without_new_information_choose_meaningful_action');
+    if(this.knownViews.size>4096)this.knownViews.clear();
+   }else if(outcome==='succeeded'&&action!=='idle')this.observationStreak=0;
+   this.record(decision,options,source,version,context,before,after,outcome,result,startedAt,observed??before);this.note(result);
    if(version===this.planVersion&&!this.closed){
     const key=JSON.stringify({action,step:context.mediumTerm.steps[context.mediumTerm.activeStep]?.id,craft:plan.craft,destination:plan.destination,container:plan.container,transfer:plan.transfer,build:plan.build,mine:plan.mine,pickup:plan.pickup,equip:plan.equip});
     if(action==='give'&&outcome==='partial')this.requestPlan('delivery_receipt_unconfirmed_do_not_repeat');

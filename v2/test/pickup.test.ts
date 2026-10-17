@@ -18,3 +18,11 @@ test('unrelated gain recorded but does not complete target pickup',async()=>{con
 test('damage interrupts pending navigation and cleans listener',async()=>{const f=setup();f.w.navigate=async()=>{f.bot.health=19;f.bot.emit('health');return new Promise(()=>{});};const r=JSON.parse(await f.w.execute('pickup',signal(),plan));assert.equal(r.status,'cancelled');assert.equal(f.bot.listenerCount('health'),0);});
 test('new visible danger stops shared collection promptly',async()=>{const f=setup();let danger=false;f.w.navigate=async()=>{danger=true;return new Promise(()=>{});};f.w.enemies=()=>danger?[{}]:[];const r=JSON.parse(await f.w.execute('pickup',signal(),plan));assert.equal(r.status,'failed');assert.match(r.detail,/danger/);});
 test('runtime journal retains pickup evidence and activated step target',async()=>{const {Runtime}=await import('../src/runtime.js');const w=new MockWorld();w.state.visibleItems=[{id:42,name:'cobblestone',count:1,position:{x:2,y:64,z:0}}];w.execute=async(a,_s,p)=>{assert.deepEqual(p?.pickup,plan.pickup);w.state.inventory=[{name:'cobblestone',count:1,slot:9}];return JSON.stringify({kind:'pickup',target:plan.pickup,status:'finished',inventoryGained:[{name:'cobblestone',count:1}]});};const r=new Runtime(w,{plan:async()=>parsePlan({...plan,steps:[{id:'p',description:'pick',action:'pickup',pickup:plan.pickup,completion:{kind:'action_success'}}]}),choose:async()=>({action:'pickup',confidence:1})},{planMs:60000,actionMs:1000,minConfidence:0},()=>{});await r.tick();await r.tick();assert.equal(r.planning.recentActions.at(-1)?.pickup?.inventoryGained[0].count,1);r.close();});
+
+test('observed target-item gain counts as acquisition despite a final approach failure, preserving attribution limits',async()=>{
+ const {classify}=await import('../src/planning.js');
+ const r={kind:'pickup',target:{entityId:7,expected:'oak_log'},status:'failed',elapsedMs:1,inventoryGained:[{name:'oak_log',count:1}],detail:'Destination not reached',attribution:'inventory_delta_not_proof_of_target_origin'};
+ assert.equal(classify('pickup',JSON.stringify(r)),'succeeded');
+ assert.equal(classify('pickup',JSON.stringify({...r,inventoryGained:[{name:'dirt',count:1}]})),'failed');
+ assert.equal(classify('pickup',JSON.stringify({...r,status:'cancelled'})),'cancelled');
+});

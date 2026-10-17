@@ -18,3 +18,32 @@ test('real pathfinder reproduces old head-clearance rejection and permits observ
 test('air and liquids in remembered cells cannot authorize walking support',()=>{
  const m=new PlaceMemory();for(const name of ['air','water','lava']){m.observe([{name,position:{x:0,y:0,z:0},lastSeen:1}]);assert.equal(m.hasSupport({x:0,y:1,z:0}),false);}
 });
+
+test('blocked navigation observes side/back footholds before retry and stops on cancellation',async()=>{
+ const {MineflayerWorld}=await import('../src/mineflayer.js');
+ for(const cancelled of [false,true]){
+  const w=Object.create(MineflayerWorld.prototype) as any,c=new AbortController();let looks=0,seen=0,walked=0,stops=0;
+  const pos=new Vec3(.5,1,.5),goal=new pathfinder.goals.GoalNear(2,1,0,0);
+  w.observe=()=>{seen++;};w.bot={entity:{position:pos},look:async()=>{looks++;if(cancelled&&looks===2)c.abort();},clearControlStates:()=>{},pathfinder:{movements:{},getPathTo:()=>seen<4?{path:[],status:'noPath'}:{path:[new Vec3(2,1,0)],status:'success'},goto:async()=>{walked++;pos.x=2.5;},setGoal:()=>{stops++;}}};
+  if(cancelled)await assert.rejects(w.navigate(goal,c.signal));else await w.navigate(goal,c.signal);
+  assert.equal(walked,cancelled?0:1);assert.ok(stops>0);assert.equal(seen,cancelled?1:4);
+ }
+});
+
+test('persisted observed destinations are selectable after reconnect while navigation rechecks current footholds',async()=>{
+ const {MineflayerWorld}=await import('../src/mineflayer.js');const w=Object.create(MineflayerWorld.prototype) as any;
+ let moves=0;w.observe=()=>{};w.knownPlaces=()=>[{name:'grass_block',position:{x:3,y:1,z:0},lastSeen:1}];w.memory=new PlaceMemory();w.navigate=async()=>{moves++;};w.stop=()=>{};
+ await w.execute('move',new AbortController().signal,{destination:{x:3,y:1,z:0}});assert.equal(moves,1);
+ await assert.rejects(w.execute('move',new AbortController().signal,{destination:{x:99,y:1,z:0}}),/Destination not observed/);assert.equal(moves,1);
+});
+
+test('arrival, completion and candidate availability agree with actual pathfinder cells',async()=>{
+ const {reachedCell}=await import('../src/reach.js'),{candidates}=await import('../src/types.js'),{completed}=await import('../src/planning.js'),{MockWorld}=await import('../src/mock.js');
+ for(const origin of [-50,50]){
+  const s=new MockWorld().snapshot(),target={x:origin-2,y:5,z:origin-2};s.position={x:origin-.5,y:5,z:origin-.5};s.places=[{name:'grass_block',position:target,lastSeen:1}];
+  const actual=new pathfinder.goals.GoalNear(target.x,target.y,target.z,2).isEnd(new Vec3(s.position.x,s.position.y,s.position.z).floored() as any);
+  assert.equal(reachedCell(s.position,target,2),actual);assert.equal(actual,true);
+  assert.equal(candidates(s,{goal:'approach',preferred:'move',destination:target}).includes('move'),false);
+  assert.equal(completed({id:'near',description:'approach',action:'move',completion:{kind:'near',position:target,radius:2}},s),true);
+ }
+});

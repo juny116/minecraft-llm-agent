@@ -61,3 +61,15 @@ test('speech generated against an old intention is discarded after plan changes'
  const r=new Runtime(w,{plan:()=>new Promise<any>(()=>{}),choose:async()=>({action:'idle',confidence:1}),communicate:()=>new Promise(resolve=>{finish=resolve;})},{planMs:10000,actionMs:1000,minConfidence:0,social:new SocialMemory('Alice')},()=>{});
  await r.tick();r.setGoal('Inspect surroundings');finish({to:'Bob',kind:'chat',text:'나무를 모을게.'});await new Promise(resolve=>setTimeout(resolve,0));assert.equal(count,0);r.close();
 });
+
+test('reworded unsolicited reports need new evidence across reconnects; replies and proposals remain allowed',t=>{
+ const dir=mkdtempSync(join(tmpdir(),'social-report-'));t.after(()=>rmSync(dir,{recursive:true,force:true}));const file=join(dir,'social.json');
+ const a=new SocialMemory('Bob',file),out:string[]=[];
+ assert.equal(a.send({to:'Alice',kind:'report',text:'판자 네 개가 있어.'},x=>out.push(x),100000,'same-state').sent,true);
+ const b=new SocialMemory('Bob',file);
+ assert.equal(b.send({to:'Alice',kind:'report',text:'내 판자는 총 네 개야.'},x=>out.push(x),110000,'same-state').reason,'no_new_report_evidence');
+ assert.equal(b.send({to:'Alice',kind:'proposal',text:'같이 주변을 살펴볼까?'},x=>out.push(x),110000,'same-state').sent,true);
+ b.ingest([{id:'q',at:111000,speaker:'Alice',text:'판자가 몇 개야?'}]);
+ assert.equal(b.send({to:'Alice',kind:'report',replyTo:'q',text:'지금 네 개 있어.'},x=>out.push(x),120000,'same-state').sent,true);
+ assert.equal(b.send({to:'Alice',kind:'report',text:'이제 다섯 개야.'},x=>out.push(x),130000,'changed-state').sent,true);
+});

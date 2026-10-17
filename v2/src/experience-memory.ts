@@ -46,7 +46,11 @@ export class ExperienceMemory {
   const batch=d.episodes.slice(d.reviewed,d.reviewed+8);
   const relevant=d.guides.filter(g=>batch.some(e=>g.scope.action===e.record.decision.action||e.record.before.enemies.some(x=>g.scope.species.includes(x.kind)))).slice(-2);
   const refs=new Set(relevant.flatMap(g=>[...g.support,...g.counterexamples]));
-  const episodes=[...batch,...d.episodes.filter(e=>refs.has(e.id)&&!batch.some(b=>b.id===e.id))].slice(0,40);
+  const prior=d.episodes.slice(0,d.reviewed),contrasts:Episode[]=[];
+  for(const action of new Set(batch.map(e=>e.record.decision.action).filter(a=>a!=='look'&&a!=='idle'))){
+   for(const success of [true,false])contrasts.push(...prior.filter(e=>e.record.decision.action===action&&(success?e.record.outcome==='succeeded':['failed','partial'].includes(e.record.outcome))).slice(-2));
+  }
+  const episodes=[...new Map([...batch,...d.episodes.filter(e=>refs.has(e.id)),...contrasts.slice(-12)].map(e=>[e.id,e])).values()].slice(0,40);
   return structuredClone({revision:d.revision,through:d.reviewed+batch.length,episodes,guides:relevant});
  }
  private validate(g:any,ids:Set<string>,historical=false){

@@ -82,3 +82,11 @@ test('invalid goal updates return feedback with fresh evidence on a bounded retr
  const brain:Brain={plan:async(_s,_h,_sig,_u,c)=>{seen.push(c);calls++;if(calls===1){old=c!.goalReview!.observationId;const p=response(c!.goalReview!);p.goalUpdates![0].evidenceIds=['old-id'];return p;}return response(c!.goalReview!);},choose:async()=>({action:'idle',confidence:1})};
  const r=new Runtime(w,brain,{...opts,goals:g},()=>{});await r.refreshPlan();assert.equal(g.snapshot().goals.length,0);await r.refreshPlan(Date.now()+1100);assert.equal(calls,2);assert.match(seen[1].plannerFeedback,/evidence/);assert.notEqual(seen[1].goalReview.observationId,old);assert.equal(g.snapshot().activeGoal?.id,'food');assert.equal(r.planning.plannerFeedback,undefined);r.close();
 });
+
+test('valid reconnect goal review survives an unavailable first step and JEV can still observe',async()=>{
+ const b=new GoalBook(),w=new MockWorld();w.state.vision!.blocks=[];let choices=0;
+ const brain:Brain={plan:async(_s,_h,_sig,_user,c)=>({...response(c!.goalReview!),preferred:'mine',mine:{position:{x:1,y:64,z:0},expected:'oak_log'}}),choose:async(_s,_p,options)=>{assert.ok(!options.includes('mine'));assert.ok(options.includes('look'));choices++;return {action:'look',confidence:.01};}};
+ const r=new Runtime(w,brain,{...opts,actionMs:1000,goals:b},()=>{}) as any;r.lastReady=true;
+ await r.refreshPlan();assert.equal(b.needsReview,false);assert.equal(b.snapshot().activeGoal?.id,'food');assert.match(r.planning.plannerFeedback,/Invalid first action/);
+ await r.tick();assert.equal(choices,1);assert.equal(r.planning.recentActions.at(-1).decision.action,'look');r.close();
+});

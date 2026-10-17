@@ -62,3 +62,24 @@ test('pickup uses visible drop elevation rather than the current feet height',as
  const f=setup();f.bot.dig=async()=>{f.breakBlock();f.drop();f.bot.entities['42'].position=new V(2,1,0);};f.w.navigate=async(g:any)=>{assert.equal(g.y,1);assert.equal(g.rangeSq,0);f.receive();};
  const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.inventoryGained[0].count,1);
 });
+
+test('partially visible target is approached once and revalidated before mining',async()=>{
+ const f=setup();let approached=0;f.w.blockInSight=()=>approached>0;
+ f.w.navigate=async(g:any)=>{assert.equal(g.rangeSq,1);approached++;};
+ const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(approached,1);assert.equal(r.blockBroken,true);
+});
+
+test('supporting floor is excluded from action choices until the bot moves off it',()=>{
+ const s=new MockWorld().snapshot();const target={position:{x:0,y:63,z:0},expected:'stone'};s.position={x:.5,y:64,z:.5};s.vision!.blocks=[{name:'stone',position:target.position,lastSeen:1}];
+ assert.equal(candidates(s,{goal:'stone',preferred:'mine',mine:target}).includes('mine'),false);
+ s.position.x=1.5;assert.equal(candidates(s,{goal:'stone',preferred:'mine',mine:target}).includes('mine'),true);
+});
+
+test('an unavailable explicit tool or stale stack slot is excluded without restricting automatic tool choice',()=>{
+ const s=new MockWorld().snapshot(),mine={position:{x:1,y:64,z:0},expected:'oak_log'};
+ assert.equal(candidates(s,{goal:'mine',preferred:'mine',mine:{...mine,tool:'wooden_shovel'}}).includes('mine'),false);
+ assert.equal(candidates(s,{goal:'mine',preferred:'mine',mine}).includes('mine'),true);
+ s.inventory=[{name:'wooden_axe',count:1,slot:9}];
+ assert.equal(candidates(s,{goal:'mine',preferred:'mine',mine:{...mine,tool:'wooden_axe',toolSlot:10}}).includes('mine'),false);
+ assert.equal(candidates(s,{goal:'mine',preferred:'mine',mine:{...mine,tool:'wooden_axe',toolSlot:9}}).includes('mine'),true);
+});

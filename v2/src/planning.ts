@@ -1,3 +1,4 @@
+import {reachedCell} from './reach.js';
 import {readPickupResult,type PickupResult} from './pickup.js';
 import {readMiningResult,type MiningResult} from './mining.js';
 import type { Action, Decision, Plan, Snapshot } from './types.js';
@@ -6,7 +7,7 @@ export type Step = import('./types.js').Interaction & {id:string;description:str
 export type Outcome = 'succeeded'|'partial'|'failed'|'cancelled'|'skipped';
 export type Observation = ReturnType<typeof compact>;
 export type ActionRecord = {pickup?:PickupResult;mining?:MiningResult;id:number;startedAt:number;endedAt:number;source:'selector'|'local_safety';selectorKind:string;decision:Decision;decisionObserved:Observation;options:Action[];planVersion:number;goal:string|null;stepId:string|null;before:Observation;after:Observation;changes:ReturnType<typeof changes>;outcome:Outcome;result:string};
-export type PlanningContext = {plannerFeedback?:string;goalReview?:import('./goals.js').GoalReview;goalState?:ReturnType<import('./goals.js').GoalBook['snapshot']>;userRequest?:string|null;longTermGoal:string|null;mediumTerm:{summary:string;steps:Step[];activeStep:number};replanReasons:string[];recentActions:ActionRecord[];olderSummary:{count:number;byAction:Partial<Record<Action,{count:number;failed:number;cancelled:number;partial:number;skipped:number}>>;inventoryNet:Record<string,number>;healthNet:number};failureStreak:number};
+export type PlanningContext = {blockedInteractions?:ReturnType<import('./retry-policy.js').RetryPolicy['context']>;observationStreak?:number;plannerFeedback?:string;goalReview?:import('./goals.js').GoalReview;goalState?:ReturnType<import('./goals.js').GoalBook['snapshot']>;userRequest?:string|null;longTermGoal:string|null;mediumTerm:{summary:string;steps:Step[];activeStep:number};replanReasons:string[];recentActions:ActionRecord[];olderSummary:{count:number;byAction:Partial<Record<Action,{count:number;failed:number;cancelled:number;partial:number;skipped:number}>>;inventoryNet:Record<string,number>;healthNet:number};failureStreak:number};
 export function compact(s:Snapshot){
  const inventory:Record<string,number>={};
  for(const i of s.inventory??[])inventory[i.name]=(inventory[i.name]??0)+i.count;
@@ -23,11 +24,11 @@ export function completed(step:Step,s:Snapshot,successfulAction?:Action){
  const c=step.completion;
  if(c.kind==='action_success')return successfulAction===step.action;
  if(c.kind==='food_at_least')return s.food>=c.value;
- if(c.kind==='near')return Math.hypot(s.position.x-c.position.x,s.position.y-c.position.y,s.position.z-c.position.z)<=c.radius;
+ if(c.kind==='near')return reachedCell(s.position,c.position,c.radius);
  return (s.inventory??[]).filter(i=>i.name===c.item).reduce((n,i)=>n+i.count,0)>=c.count;
 }
 export function classify(action:Action,result:string):Outcome {
- if(action==='pickup'){const r=readPickupResult(result);return r?.status==='cancelled'?'cancelled':r?.status==='finished'&&r.inventoryGained.some(i=>i.name===r.target?.expected&&i.count>0)?'succeeded':'failed';}
+ if(action==='pickup'){const r=readPickupResult(result);return r?.status==='cancelled'?'cancelled':r?.inventoryGained.some(i=>i.name===r.target?.expected&&i.count>0)?'succeeded':'failed';}
  if(action==='mine'){const r=readMiningResult(result);return r?.status==='cancelled'?'cancelled':r?.blockBroken?'succeeded':r?.status==='time_limit'?'partial':'failed';}
  if(action==='give')return 'partial'; // Dropping near a player alone never proves delivery.
  if(action!=='attack'&&action!=='flee')return 'succeeded';

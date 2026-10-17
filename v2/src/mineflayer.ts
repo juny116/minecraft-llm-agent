@@ -1,3 +1,4 @@
+import {craftFailure} from './craft-feedback.js';
 import {observedMovements} from './navigation.js';
 import {SpatialMemory} from './spatial-memory.js';
 import {botMemoryLocation} from './experience-memory.js';
@@ -5,7 +6,7 @@ import {join} from 'node:path';
 import {executeEquip} from './equipment.js';
 import {validatePickup,type PickupResult} from './pickup.js';
 import {miningResult,inventoryGains} from './mining.js';
-import {buildingMaterial,validateBuild,validateDig,sameCell,overlapsCell} from './building.js';
+import {buildingMaterial,validateBuild,validateDig,sameCell,overlapsCell,supportsFeet} from './building.js';
 import {randomUUID} from 'node:crypto';
 import {IncomingDamage} from './incoming-damage.js';
 import {CombatEvidenceStore} from './combat-evidence.js';
@@ -126,9 +127,13 @@ export class MineflayerWorld implements World {
       target=this.bot.blockAt(vec);if(!target||target.name!==request.expected)throw Error('Block target changed');const stateId=target.stateId;
       if(!this.bot.canDigBlock(target))await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,3),active);
       active.throwIfAborted();await this.bot.lookAt(vec.offset(.5,.5,.5),false);active.throwIfAborted();
+      if(!this.blockInSight(target)){await this.navigate(new goals.GoalNear(cell.x,Math.floor(this.bot.entity.position.y),cell.z,1),active);active.throwIfAborted();await this.bot.lookAt(vec.offset(.5,.5,.5),false);active.throwIfAborted();}
       const fresh=()=>{const b=this.bot.blockAt(vec),feet=this.bot.entity.position;
-        if(!b||b.stateId!==stateId||!this.blockInSight(b)||!b.diggable||!this.bot.canDigBlock(b))throw Error('Block target changed, occluded or currently unavailable');
-        if(cell.y<feet.y&&cell.y+1>=feet.y-.1&&overlapsCell(cell,{x:feet.x,y:cell.y,z:feet.z}))throw Error('Block supports own feet');return b;};
+        if(!b||b.stateId!==stateId)throw Error('Block target changed');
+        if(!b.diggable)throw Error('Block is not diggable with current interaction');
+        if(!this.bot.canDigBlock(b))throw Error('Block is outside current mining reach; reposition');
+        if(!this.blockInSight(b))throw Error('Block is visible only partially; no clear mining face from current position. Reposition or choose another target');
+        if(supportsFeet(cell,feet))throw Error('Block supports own feet');return b;};
       target=fresh();const tool=request.toolSlot!==undefined?this.bot.inventory.items().find(i=>i.slot===request.toolSlot&&(!request.tool||i.name===request.tool)):request.tool?this.bot.inventory.items().find(i=>i.name===request.tool):this.bot.pathfinder.bestHarvestTool(target);
       if((request.tool||request.toolSlot!==undefined)&&!tool)throw Error('Requested mining tool not carried');
       const original=this.bot.clickWindow;
@@ -372,9 +377,17 @@ export class MineflayerWorld implements World {
         if(goal.isEnd(feet as any))return;
         const p=this.bot.entity.position,yaw=Math.atan2(-(goal.x+.5-p.x),-(goal.z+.5-p.z));
         await this.bot.look(yaw,-Math.PI/4,false);signal?.throwIfAborted();this.observe(true);
-        const path=this.bot.pathfinder.getPathTo(this.bot.pathfinder.movements,goal,200);
-        const end=path.path.at(-1);
-        if(!end||end.x===feet.x&&end.y===feet.y&&end.z===feet.z)throw Error('Destination not reached: no observed route');
+        let path=this.bot.pathfinder.getPathTo(this.bot.pathfinder.movements,goal,200);
+        let end=path.path.at(-1);
+        if(!end||end.x===feet.x&&end.y===feet.y&&end.z===feet.z){
+          // A detour may begin beside/behind us. Turn the actual camera before
+          // admitting those footholds; never query unseen supports as knowledge.
+          for(const turn of [Math.PI/2,Math.PI,-Math.PI/2]){
+            await this.bot.look(yaw+turn,-Math.PI/4,false);signal?.throwIfAborted();this.observe(true);
+          }
+          path=this.bot.pathfinder.getPathTo(this.bot.pathfinder.movements,goal,200);end=path.path.at(-1);
+        }
+        if(!end||end.x===feet.x&&end.y===feet.y&&end.z===feet.z)throw Error('Destination not reached: no observed route after local scan');
         const waypoint=path.status==='success'?goal:new goals.GoalNear(end.x,end.y,end.z,0);
         try{await this.bot.pathfinder.goto(waypoint);}finally{this.bot.pathfinder.setGoal(null);this.bot.clearControlStates();}
         signal?.throwIfAborted();
@@ -481,7 +494,7 @@ export class MineflayerWorld implements World {
       }
       if (action === 'move') {
         const p=plan?.destination;
-        if (!p || !this.memory.snapshot().some(b=>b.position.x===p.x&&b.position.y===p.y&&b.position.z===p.z)) throw new Error('Destination not observed');
+        if (!p || !this.knownPlaces().some(b=>b.position.x===p.x&&b.position.y===p.y&&b.position.z===p.z)) throw new Error('Destination not observed');
         await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2),signal);
         this.observe(true);
       }
@@ -494,12 +507,14 @@ export class MineflayerWorld implements World {
         let table=inventoryRecipe ? null : this.table();
         if(table) {
           await this.navigate(new goals.GoalNear(table.position.x,table.position.y,table.position.z,2),signal);
-          signal.throwIfAborted(); this.observe(true); table=this.table();
+          signal.throwIfAborted(); await this.bot.lookAt(table.position.offset(.5,.5,.5),false);signal.throwIfAborted();this.observe(true);
+          const observed=this.bot.blockAt(table.position);
+          table=observed?.name==='crafting_table'&&this.blockInSight(observed)?observed:null;
         }
         const recipe=inventoryRecipe ?? this.bot.recipesFor(item.id,null,1,table)[0];
-        if(!recipe) throw new Error('Missing ingredients or visible crafting table');
+        if(!recipe) throw new Error(craftFailure(this.bot,request,this.recipeBook.snapshot().unlocked,table));
         const before=this.bot.inventory.items().filter(i=>i.type===item.id).reduce((n,i)=>n+i.count,0);
-        signal.throwIfAborted(); if(recipe.delta.some(d=>this.bot.inventory.count(d.id,d.metadata)+d.count*request.count<0)) throw new Error('Insufficient ingredients for requested count');
+        signal.throwIfAborted(); if(recipe.delta.some(d=>this.bot.inventory.count(d.id,d.metadata)+d.count*request.count<0)) throw new Error(craftFailure(this.bot,request,this.recipeBook.snapshot().unlocked,table));
         // Mineflayer has no craft AbortSignal: guard every inventory click and
         // finish one recipe at a time so cancellation cannot start another batch.
         const originalClick=this.bot.clickWindow;
