@@ -1,0 +1,58 @@
+// Regression coverage for the unified successor to gather and dig_block.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {EventEmitter} from 'node:events';
+import {MineflayerWorld} from '../src/mineflayer.js';
+import {classify,completed} from '../src/planning.js';
+import {validateDig} from '../src/building.js';
+import {actions,candidates,type Plan} from '../src/types.js';
+import {MockWorld} from '../src/mock.js';
+class V {constructor(public x:number,public y:number,public z:number){} offset(x:number,y:number,z:number){return new V(this.x+x,this.y+y,this.z+z);} scaled(n:number){return new V(this.x*n,this.y*n,this.z*n);} minus(p:V){return this.offset(-p.x,-p.y,-p.z);} norm(){return Math.hypot(this.x,this.y,this.z);} distanceTo(p:V){return this.minus(p).norm();}}
+const p:Plan={goal:'mine observed stone',preferred:'mine',mine:{position:{x:2,y:0,z:0},expected:'stone'}};
+function setup(){
+ const w=Object.create(MineflayerWorld.prototype) as any;let broken=false;let received=0;let attacks=0;let stops=0;const target={name:'stone',stateId:1,diggable:true,position:new V(2,0,0)};
+ w.containers=[];w.visible=[target];w.memory={observe:()=>{}};w.observe=()=>{};w.blockInSight=()=>true;w.entityVisible=()=>true;w.enemies=()=>[];w.navigate=async()=>{};w.stop=()=>{stops++;};
+ const bot=Object.assign(new EventEmitter(),{health:20,entity:{position:new V(0,0,0)},entities:{} as Record<string,any>,inventory:{items:()=>received?[{name:'cobblestone',count:received}]:[]},blockAt:()=>broken?{name:'air'}:target,lookAt:async()=>{},pathfinder:{bestHarvestTool:()=>null},canDigBlock:()=>true,heldItem:{name:'iron_pickaxe',enchants:[{name:'silk_touch',lvl:1}],durabilityUsed:4},clickWindow:async()=>{},equip:async()=>{},stopDigging:()=>{stops++;},dig:async()=>{attacks++;broken=true;}});w.bot=bot;
+ return {w,bot,breakBlock:()=>{broken=true;},receive:(n=1)=>received+=n,stats:()=>({attacks,stops}),drop:()=>{const e={id:42,name:'item',position:new V(2,0,0),getDroppedItem:()=>({name:'cobblestone',count:1})};bot.entities['42']=e;bot.emit('itemDrop',e);}};
+}
+const signal=()=>new AbortController().signal;
+test('only mine is selectable, requiring explicit observed target',()=>{assert.ok(actions.includes('mine'));assert.ok(!actions.includes('gather' as any));assert.ok(!actions.includes('dig_block' as any));const s=new MockWorld().snapshot();assert.ok(!candidates(s,{goal:'mine',preferred:'mine'}).includes('mine'));});
+test('break without a visible drop or inventory gain remains honest and does not meet a resource goal',async()=>{
+ const f=setup(),r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.blockBroken,true);assert.equal(r.dropObservation,'none_observed');assert.deepEqual(r.inventoryGained,[]);assert.equal(r.tool.enchants[0].name,'silk_touch');assert.ok(r.attemptMs>=0);assert.equal(classify('mine',JSON.stringify(r)),'succeeded');
+ assert.equal(completed({id:'stone',description:'obtain',action:'mine',completion:{kind:'inventory_at_least',item:'cobblestone',count:1}},new MockWorld().snapshot(),'mine'),false);
+});
+test('visible drop and actual inventory gain recorded independently',async()=>{
+ const f=setup();f.bot.dig=async()=>{f.breakBlock();f.drop();};f.w.navigate=async()=>f.receive();const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.blockBroken,true);assert.equal(r.drops[0].name,'cobblestone');assert.deepEqual(r.inventoryGained,[{name:'cobblestone',count:1}]);assert.equal(r.pickup,'inventory_gain_observed');
+});
+test('seen drop with unreachable pickup records no gain, not no drop',async()=>{
+ const f=setup();f.bot.dig=async()=>{f.breakBlock();f.drop();};f.w.navigate=async()=>{throw Error('No path');};const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.blockBroken,true);assert.equal(r.dropObservation,'observed_near_target');assert.deepEqual(r.inventoryGained,[]);assert.equal(r.pickup,'interrupted');
+});
+test('timeout is incomplete within budget, never an unmineable verdict; tool and elapsed attempt survive',async()=>{
+ const f=setup();f.bot.dig=()=>new Promise(()=>{});const r=JSON.parse(await f.w.execute('mine',signal(),{...p,mine:{...p.mine!,maxMs:1000}}));assert.equal(r.blockBroken,false);assert.equal(r.status,'time_limit');assert.ok(r.attemptMs>=900);assert.equal(classify('mine',JSON.stringify(r)),'partial');assert.ok(f.stats().stops>0);
+});
+test('damage stops mining and preserves break evidence if block already disappeared',async()=>{
+ const f=setup();f.bot.dig=async()=>{f.breakBlock();f.bot.health=19;f.bot.emit('health');};const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.blockBroken,true);assert.equal(r.status,'cancelled');assert.equal(r.pickup,'not_attempted');assert.equal(f.bot.listenerCount('health'),0);
+});
+test('old successful attempt timeout cannot stop a later action',async()=>{
+ const f=setup();await f.w.execute('mine',signal(),{...p,mine:{...p.mine!,maxMs:1000}});const before=f.stats().stops;await new Promise(r=>setTimeout(r,850));assert.equal(f.stats().stops,before);
+});
+test('occluded target is not mined and reports failure instead of guessing drops',async()=>{
+ const f=setup();f.w.blockInSight=()=>false;const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.blockBroken,false);assert.equal(r.status,'failed');assert.equal(r.dropObservation,'not_checked');assert.equal(f.stats().attacks,0);
+});
+test('bounded timing validated and tool choice must be an item identifier',()=>{for(const maxMs of [0,999,120001,NaN])assert.throws(()=>validateDig({...p.mine!,maxMs}));validateDig({...p.mine!,maxMs:120000,tool:'diamond_pickaxe'});});
+test('exact tool slot selects enchantments without assuming same-name tools are equivalent',async()=>{
+ const f=setup();const plain={name:'iron_pickaxe',slot:9,enchants:[],durabilityUsed:0},silk={name:'iron_pickaxe',slot:10,enchants:[{name:'silk_touch',lvl:1}],durabilityUsed:2};
+ f.bot.inventory.items=(()=>[plain,silk]) as any;f.bot.pathfinder.bestHarvestTool=(()=>plain) as any;f.bot.equip=(async(item:any)=>{f.bot.heldItem=item;}) as any;
+ const r=JSON.parse(await f.w.execute('mine',signal(),{...p,mine:{...p.mine!,toolSlot:10}}));assert.equal(r.tool.enchants[0].name,'silk_touch');assert.equal(r.tool.durabilityUsed,2);
+});
+test('structured mining result is retained in the runtime journal separately from inventory deltas',async()=>{
+ const {Runtime}=await import('../src/runtime.js');const w=new MockWorld();const target={position:{x:1,y:64,z:0},expected:'oak_log'};
+ const r=new Runtime(w,{plan:async()=>({goal:'wood',preferred:'mine',mine:target}),choose:async()=>({action:'mine',confidence:1})},{planMs:60000,actionMs:1000,minConfidence:0},()=>{});
+ await r.tick();await r.tick();assert.equal(r.planning.recentActions.at(-1)?.mining?.blockBroken,true);assert.equal(r.planning.recentActions.at(-1)?.changes.inventory.oak_log,1);r.close();
+});
+test('pickup approaches the actual drop cell rather than stopping one block short',async()=>{
+ const f=setup();f.bot.dig=async()=>{f.breakBlock();f.drop();};f.w.navigate=async(g:any)=>{assert.equal(g.rangeSq,0);f.receive();};
+ const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.inventoryGained[0].count,1);
+});
+
+test('confirmed destruction invalidates previously observed storage at that cell',async()=>{const f=setup();f.w.containers=[{position:{x:2,y:0,z:0},observedAt:1,items:[]}];await f.w.execute('mine',signal(),p);assert.deepEqual(f.w.containers,[]);});

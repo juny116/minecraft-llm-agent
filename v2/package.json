@@ -1,0 +1,26 @@
+{
+  "name": "minecraft-llm-agent-v2",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "demo": "tsx src/cli.ts --mock",
+    "start": "tsx src/cli.ts --live",
+    "api:check": "tsx src/cli.ts --api-check",
+    "test": "tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "dotenv": "^18.0.8",
+    "mineflayer": "^4.39.0",
+    "mineflayer-pathfinder": "^2.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

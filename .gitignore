@@ -32,3 +32,12 @@ node_modules/
 
 .ruff_cache/
 memory/
+
+# v2 manifests and templates are source; credentials and run data remain ignored.
+!v2/package.json
+!v2/tsconfig.json
+!v2/pnpm-lock.yaml
+!v2/pnpm-workspace.yaml
+!v2/.env.example
+v2/runs/
+v2/dist/

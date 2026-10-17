@@ -1,0 +1,11 @@
+# Repository instructions
+- Active implementation: v2/. Read README.md, v2/docs/SPEC.md and HANDOFF.md first.
+- Inspect branch, changes and active processes; preserve others' work and coordinate ownership.
+- Functional checks only unless explicitly authorized otherwise. Honor the user's current budget; no implicit paid/background runs.
+- One action owner per bot; revalidate visibility/state and reject stale responses. Preserve cancellation.
+- Recipes come from server unlocks. No hidden map, opponent HP or another inventory in model inputs.
+- Verify actual outcomes; distinguish mock, live functional evidence and experiments.
+- Update README actions/status/TODO with each feature change. Prefer reusing actions.
+- EVERY push: follow SECURITY.md; inspect tracked files AND outgoing history for secrets/server information. Never force-add .env, runs, logs, memories, credentials or SSH files.
+- Private operational handoffs belong in ignored runs/private-docs/. Public docs use placeholders.
+- Run relevant typecheck/tests from v2/. Do not publish user server addresses, accounts, SSH aliases or deployment paths.
