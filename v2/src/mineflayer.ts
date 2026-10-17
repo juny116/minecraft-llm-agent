@@ -26,6 +26,7 @@ const { pathfinder, goals } = pathfinderPackage;
 function samePosition(a:{x:number;y:number;z:number},b:{x:number;y:number;z:number}){return a.x===b.x&&a.y===b.y&&a.z===b.z;}
 export class MineflayerWorld implements World {
   private spatial?:SpatialMemory;
+  private lastAlivePossessions?:import('./recovery.js').AlivePossessions;
   private recovery:RecoveryMemory;private generation=0;private deathCount=0;private dead=false;
   private bot: mineflayer.Bot;
   private ready = false;
@@ -48,7 +49,7 @@ export class MineflayerWorld implements World {
     // The full declare_recipes catalog is intentionally never added to observations.
     this.bot._client.on('unlock_recipes', packet => this.recipeBook.apply(packet));
     this.bot.on('spawn', () => {
-      this.generation++;this.dead=false;this.memory.clear();this.visible=[];this.containers=[];this.combatEvidence.clear();this.incomingDamage.clear();
+      this.generation++;this.dead=false;this.lastAlivePossessions=undefined;this.memory.clear();this.visible=[];this.containers=[];this.combatEvidence.clear();this.incomingDamage.clear();
       const movement = observedMovements(this.bot,this.memory);
       this.bot.pathfinder.setMovements(movement); this.ready = true;
       this.recovery.respawn(this.snapshot());log('spawn',{generation:this.generation});
@@ -65,7 +66,7 @@ export class MineflayerWorld implements World {
       if(entity)this.combatEvidence.hurt(entity.id,packet.sourceCauseId===this.bot.entity?.id+1,this.entityVisible(entity),Date.now());
     });
     this.bot.on('entityDead',entity=>{if(entity&&this.entityVisible(entity))this.combatEvidence.death(entity.id,Date.now());});
-    this.bot.on('death', () => { const death=this.recovery.death(this.snapshot());this.deathCount++;this.dead=true;this.ready=false;this.stop();log('death',{death}); });
+    this.bot.on('death', () => { const death=this.recovery.death(this.snapshot(),this.lastAlivePossessions);this.deathCount++;this.dead=true;this.ready=false;this.stop();log('death',{death}); });
     this.bot.on('end', () => { this.saveSpatial(true); this.ready = false; this.recipeBook.reset(); this.memory.clear(); this.containers=[]; this.visible=[]; this.combatEvidence.clear();this.incomingDamage.clear(); log('disconnected'); });
     this.bot.on('kicked', () => { this.ready = false; log('kicked'); });
     this.bot.on('error', () => log('connection_error')); // no raw credentials/packets
@@ -472,7 +473,7 @@ export class MineflayerWorld implements World {
       const item=this.bot.registry.itemsByName[name];
       return item && this.bot.recipesFor(item.id,null,1,table).length>0;
     }))] : [];
-    return { visibleItems:this.ready?this.visibleItems():[],placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
+    const snapshot:Snapshot={ visibleItems:this.ready?this.visibleItems():[],placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
       vision: {yaw:this.bot.entity?.yaw ?? 0,pitch:this.bot.entity?.pitch ?? 0,blocks:summarizePlaces(structuredClone(this.visible))}, places:summarizePlaces(this.knownPlaces()),craftable,
       dimension:String(this.bot.game?.dimension??'unknown'),environment:{inWater:!!(this.bot.entity as any)?.isInWater,inLava:!!(this.bot.entity as any)?.isInLava,onGround:!!this.bot.entity?.onGround,oxygen:(this.bot as any).oxygenLevel},lifecycle:{generation:this.generation,deathCount:this.deathCount,phase:this.dead?'dead':this.ready?'alive':'connecting',lastDeath:this.recovery.context().deaths.at(-1)},recovery:this.recovery.context(),
       ready: this.ready, health: this.bot.health ?? 0, food: this.bot.food ?? 0, logs,
@@ -480,6 +481,8 @@ export class MineflayerWorld implements World {
       canEat: this.ready && (this.bot.food ?? 20) < 20 && !!this.food(),
       canFollow: this.ready && !!this.bot.players[this.c.follow]?.entity && this.entityVisible(this.bot.players[this.c.follow].entity!),
       position: { x: position.x, y: position.y, z: position.z }, chatEvents:structuredClone(this.chatEvents),messages: [...this.messages], recipeBook: this.recipeBook.snapshot() };
+    if(snapshot.ready&&snapshot.health>0&&!this.dead)this.lastAlivePossessions={at:Date.now(),inventory:structuredClone(snapshot.inventory),equipment:structuredClone(snapshot.equipment)};
+    return snapshot;
   }
   async execute(action: Action, signal: AbortSignal, plan?: Plan) {
     signal.throwIfAborted();

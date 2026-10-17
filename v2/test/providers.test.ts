@@ -65,7 +65,7 @@ test('contextual planner accepts waiting without steps but requires steps for wo
 
 test('social API distinguishes intended from running work and repairs wrong language within one extra call',async()=>{
  let calls=0;const speech={to:'all',kind:'chat',text:'Привет'};
- const transport=(async(_url:any,init:any)=>{calls++;const body=JSON.parse(init.body),data=JSON.parse(body.messages[1].content);if(calls===1){assert.equal(data.execution.activeAction,null);assert.match(body.messages[0].content,/NOT execution/);}return Response.json({choices:[{message:{content:JSON.stringify({speech:{...speech,text:calls===1?speech.text:'안녕, 주변을 살펴볼게.'}})}}],usage:{prompt_tokens:10,completion_tokens:5}});}) as typeof fetch;
+ const transport=(async(_url:any,init:any)=>{calls++;const body=JSON.parse(init.body),data=JSON.parse(body.messages[1].content);if(calls===1){assert.equal(data.execution.activeAction,null);assert.ok(data.allowedActions.includes('mine'));assert.match(body.messages[0].content,/never translated prose/);assert.match(body.messages[0].content,/NOT execution/);}return Response.json({choices:[{message:{content:JSON.stringify({speech:{...speech,text:calls===1?speech.text:'안녕, 주변을 살펴볼게.'}})}}],usage:{prompt_tokens:10,completion_tokens:5}});}) as typeof fetch;
  const b=new ApiBrain(c(),new Budget(3,1),transport);const result=await b.communicate(new MockWorld().snapshot(),{goal:'gather',preferred:'mine'},signal(),{activeAction:null,planPending:false});assert.match(result!.text,/살펴/);assert.equal(calls,2);
 });
 test('wrong language after bounded repair is not sent',async()=>{
@@ -83,3 +83,11 @@ test('already cancelled request never dispatches or charges',async()=>{const b=n
 test('in-flight cancellation charges ceiling but never retries',async()=>{const b=new Budget(5,1),a=new AbortController();let calls=0;const brain=new ApiBrain(c(),b,(async()=>{calls++;a.abort();throw Error('private network details');}) as typeof fetch);await assert.rejects(brain.plan(new MockWorld().snapshot(),[],a.signal),/cancelled/);assert.equal(calls,1);assert.equal(b.boundedUnknownUsage,1);assert.equal(b.reservedUsd,0);});
 test('missing usage charges each attempt and third unknown opens circuit',async()=>{const b=new Budget(10,1),brain=new ApiBrain(c(),b,(async()=>Response.json({})) as typeof fetch);await assert.rejects(brain.plan(new MockWorld().snapshot(),[],signal()),/missing_usage/);await assert.rejects(brain.plan(new MockWorld().snapshot(),[],signal()),/missing_usage/);assert.equal(b.calls,3);assert.equal(b.boundedUnknownUsage,3);assert.equal(b.exhausted,true);});
 test('HTTP 429 is retried with no unknown charge, auth errors stop without retry',async()=>{let calls=0;const b=new Budget(5,1),brain=new ApiBrain(c(),b,(async()=>++calls===1?new Response('',{status:429}):ok()) as typeof fetch);await brain.plan(new MockWorld().snapshot(),[],signal());assert.equal(calls,2);assert.equal(b.unknownUsd,0);const fatal=new Budget(5,1);await assert.rejects(new ApiBrain(c(),fatal,(async()=>new Response('',{status:401})) as typeof fetch).plan(new MockWorld().snapshot(),[],signal()),/401/);assert.equal(fatal.calls,1);assert.ok(fatal.exhausted);});
+
+// Match the JSON-mode endpoint contract rather than accepting every mock request.
+test('separate long-goal request explicitly asks for JSON without relying on observation text',async()=>{
+ const transport=(async(_url:any,init:any)=>{const body=JSON.parse(init.body);assert.equal(body.response_format.type,'json_object');assert.match(body.messages[0].content,/json/i);return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[],activeGoalId:null})}}],usage:{prompt_tokens:10,completion_tokens:10}});}) as typeof fetch;
+ const b=new ApiBrain(c(),new Budget(2,1),transport);
+ const context:any={longTermGoal:null,mediumTerm:{summary:'',steps:[],activeStep:0},replanReasons:[],recentActions:[],olderSummary:{count:0,byAction:{},inventoryNet:{},healthNet:0},failureStreak:0};
+ assert.equal((await b.reviewGoals(new MockWorld().snapshot(),context,signal())).activeGoalId,null);
+});

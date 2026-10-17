@@ -79,3 +79,19 @@ test('pending conversation reply survives unrelated movement but cannot acknowle
 test('wounded unthreatened bot retains an eating candidate instead of being forced idle',()=>{
  const s=new MockWorld().snapshot();s.health=5;s.food=12;s.canEat=true;assert.deepEqual(candidates(s),['idle','eat']);s.enemies=[{id:1,kind:'zombie',position:{x:1,y:64,z:0},distance:1}];assert.deepEqual(candidates(s),['idle','flee']);
 });
+
+test('invalid dialogue retains inbox and backs off while JEV continues',async()=>{
+ const social=new SocialMemory('Alice'),w=new MockWorld();w.state.chatEvents=[{id:'q',speaker:'Bob',text:'도와줄래?',at:1}];let calls=0,selectors=0;
+ const b=brain(async(_s,i)=>{selectors++;return decision('wait',Object.fromEntries(i.inbox.map(m=>[m.id,'respond'])));});b.communicate=async()=>{calls++;throw Error('Invalid promise');};
+ const r=new Runtime(w,b,{...opts,social},()=>{});const t=Date.now();await r.tick(t);await r.tick(t+1);await flush();await r.tick(t+2000);await flush();assert.equal(calls,1);assert.equal(selectors,3);assert.equal(social.addressed()[0].id,'q');await r.tick(t+11000);await flush();assert.equal(calls,2);r.close();
+});
+test('medium review without active intention requests a throttled long review',async()=>{
+ let reviews=0;const b=brain(async()=>({...decision('wait'),review:'medium'}));b.reviewGoals=async()=>{reviews++;return {goalUpdates:[],activeGoalId:null};};const r=new Runtime(new MockWorld(),b,opts,()=>{}),t=Date.now();await r.tick(t);await flush();await r.tick(t+1000);await flush();assert.equal(reviews,1);await r.tick(t+31000);await flush();assert.equal(reviews,2);r.close();
+});
+
+test('death packet with cleared inventory preserves timestamped last-alive possessions',()=>{
+ const w=new MockWorld(),r=new RecoveryMemory(),s=w.snapshot();s.inventory=[];s.equipment=[];s.health=0;
+ const observed={at:1234,inventory:[{name:'wooden_pickaxe',count:1,slot:36}],equipment:[{slot:'hand',name:'wooden_pickaxe'}]};
+ const d=r.death(s,observed);assert.equal(d.inventory![0].name,'wooden_pickaxe');assert.equal(d.possessionsObservedAt,1234);assert.equal(d.possessionsSource,'last_alive_observation');
+ const empty=r.death(s,{at:1250,inventory:[],equipment:[]});assert.deepEqual(empty.inventory,[]);assert.match(r.context().warning,/not proof of actual dropped items/);
+});

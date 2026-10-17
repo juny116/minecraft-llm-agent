@@ -281,8 +281,10 @@ export class Runtime {
    this.plannerFeedback=undefined;this.supervisorUrgent=true;this.log('plan',{plan:this.plan,scope:'medium'});
   }).catch(()=>{if(!this.closed){this.requestPlan('medium_plan_error');this.retryAfter=Date.now()+10000;this.log('planner_error');}}).finally(()=>{this.planPending=false;});
  }
+ private socialRetryAt=0;
+ private socialFailures=0;
  private async converseQueued(s:Snapshot,now:number){
-  const social=this.options.social;if(!social||!this.brain.communicate||this.socialPending||!social.canSpeak(now))return;
+  const social=this.options.social;if(!social||!this.brain.communicate||this.socialPending||!social.canSpeak(now)||now<this.socialRetryAt)return;
   const inbox=social.addressed(),newWork=this.journal.recent.at(-1)?.id??0;
   const key=JSON.stringify([inbox.map(m=>m.id),newWork,s.nearbyPlayers?.map(p=>p.name)]);
   if(!inbox.length&&(now-this.lastSocial<(this.options.socialMs??30000)||key===this.lastSocialKey||!s.nearbyPlayers?.length))return;
@@ -292,6 +294,7 @@ export class Runtime {
   try{
    const speech=await this.brain.communicate({...s,social:social.context()},this.plan,this.lifetime.signal,{activeAction:action??null,planPending:this.planPending});
    if(this.closed||life!==this.longGeneration)return;
+   this.socialFailures=0;this.socialRetryAt=0;
    if(!speech){social.handled(ids);this.log('social_silence');return;}
    const fresh=this.world.snapshot();
    if(!fresh.ready)return;
@@ -302,9 +305,9 @@ export class Runtime {
    if(ids.length&&(!speech.replyTo||!ids.includes(speech.replyTo))){this.log('social_discarded',{reason:'reply must identify pending message'});return;}
    if(speech.aliases?.length)social.rememberAliases(speech.aliases);
    const result=social.send(speech,t=>this.world.chat(t),Date.now(),JSON.stringify([original.inventory,original.health,original.food]));
-   if(result.sent){social.handled(speech.replyTo?[speech.replyTo]:[]);if(speech.promise||['accept','decline'].includes(speech.kind))this.requestPlan('conversation commitment');}
+   if(result.sent){social.handled(speech.replyTo?[speech.replyTo]:[]);if(speech.promise||['accept','decline'].includes(speech.kind)){this.requestPlan('conversation commitment');if(!this.longGoal)this.longRequested=true;}}
    this.log('social_speech',result);
-  }catch{if(!this.closed)this.log('social_error');}finally{this.socialPending=false;}
+  }catch{if(!this.closed){this.socialRetryAt=Date.now()+Math.min(60000,10000*2**Math.min(3,this.socialFailures++));this.log('social_error',{retryAfterMs:this.socialRetryAt-Date.now()});}}finally{this.socialPending=false;}
  }
  private async tickContinuous(now:number){
   const s=this.observation();this.newLife(s);s.recovery=this.options.recovery!.context();
@@ -325,7 +328,7 @@ export class Runtime {
    if(this.closed||life!==this.longGeneration)return;
    // Routing belongs to message IDs, not movement state. Preserve new arrivals in the queue.
    for(const m of inbox)if(d.routes[m.id])this.options.social?.route(m.id,d.routes[m.id]);
-   if(d.review==='long')this.longRequested=true;else if(d.review==='medium')this.requestPlan('selector requested review');
+   if(d.review==='long')this.longRequested=true;else if(d.review==='medium'){this.requestPlan('selector requested review');if(!this.longGoal)this.longRequested=true;}
    const fresh=this.world.snapshot();
    if(!fresh.ready||fresh.health<=0||Date.now()-started>(this.options.decisionTtlMs??5000)||execId!==this.executionId){this.log('decision_discarded');return;}
    if(fresh.health<s.health||JSON.stringify(fresh.enemies?.map(e=>e.id)??[])!==enemyKey){this.supervisorUrgent=true;this.log('decision_discarded',{reason:'threat changed'});return;}
