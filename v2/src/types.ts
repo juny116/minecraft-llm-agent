@@ -6,6 +6,9 @@ export type Interaction = {equip?:import('./equipment.js').EquipRequest;pickup?:
 export type Plan = Interaction & { userRequest?:string|null; goalUpdates?:import('./goals.js').GoalDraft[]; activeGoalId?:string|null; speech?:import('./social.js').Speech; activeStepId?: string; longTermGoal?: string; goalRevisionReason?: string; steps?: import('./planning.js').Step[]; goal: string; preferred: Action; say?: string; destination?: { x: number; y: number; z: number }; craft?: { item: string; count: number }; look?: { yaw: number; pitch: number } };
 export type DecisionPlan = Omit<Plan,'preferred'> & {preferred?:Action;recentOutcome?:{action:Action;outcome:import('./planning.js').Outcome;result:string;changes:ReturnType<typeof import('./planning.js').changes>}};
 export type Snapshot = {
+  // Motor validation only; never sent to model prompts.
+  observedDestinationKeys?: string[];
+  navigationTargets?: {x:number;y:number;z:number}[];
   dimension?:string;environment?:{inWater:boolean;inLava:boolean;onGround:boolean;oxygen?:number};
   lifecycle?:{generation:number;deathCount:number;phase:'alive'|'dead'|'connecting';lastDeath?:import('./recovery.js').DeathExperience};
   recovery?:ReturnType<import('./recovery.js').RecoveryMemory['context']>;
@@ -44,7 +47,7 @@ export type Decision = { action: Action; confidence: number };
 export interface Brain {
   reviewGoals?(state:Snapshot,context:import('./planning.js').PlanningContext,signal:AbortSignal):Promise<{goalUpdates:import('./goals.js').GoalDraft[];activeGoalId:string|null;recoveryDecision?:{deathId:string;strategy:'recover'|'prepare'|'defer'|'abandon'|'resolved';reason:string}}>;
   supervise?(state:Snapshot,input:import('./supervision.js').SupervisorInput,signal:AbortSignal):Promise<import('./supervision.js').Supervision>;
-  communicate?(state:Snapshot,plan:Plan,signal:AbortSignal,execution?:{activeAction:Action|null;planPending:boolean}):Promise<import('./social.js').Speech|null>;
+  communicate?(state:Snapshot,plan:Plan,signal:AbortSignal,execution?:{activeAction:Action|null;planPending:boolean;feedback?:string}):Promise<import('./social.js').Speech|null>;
   readonly reflectionModel?:string;
   reflect?(input:import('./experience-memory.js').Reflection,signal:AbortSignal):Promise<unknown>;
   plan(state: Snapshot, history: string[], signal: AbortSignal, userGoal?: string | null, context?: import('./planning.js').PlanningContext): Promise<Plan>;
@@ -52,7 +55,7 @@ export interface Brain {
 }
 export const actions: Action[] = ['idle', 'mine', 'deposit', 'eat', 'follow', 'move', 'craft', 'look', 'attack', 'flee', 'place_table', 'inspect_container', 'withdraw', 'give', 'place_block', 'pickup', 'equip'];
 export function hasMiningTool(s:Snapshot,r:import('./building.js').DigRequest){return !r.tool&&r.toolSlot===undefined||!!s.inventory?.some(i=>(!r.tool||i.name===r.tool)&&(r.toolSlot===undefined||i.slot===r.toolSlot));}
-export function knownDestination(s:Pick<Snapshot,'places'|'dimension'|'recovery'>,p:Snapshot['position']){return s.places?.some(b=>b.position.x===p.x&&b.position.y===p.y&&b.position.z===p.z)||s.recovery?.deaths.some(d=>!!s.dimension&&d.dimension===s.dimension&&Math.floor(d.position.x)===p.x&&Math.floor(d.position.y)===p.y&&Math.floor(d.position.z)===p.z);}
+export function knownDestination(s:Pick<Snapshot,'places'|'dimension'|'recovery'|'navigationTargets'|'observedDestinationKeys'>,p:Snapshot['position']){return !!(s.observedDestinationKeys?.includes([p.x,p.y,p.z].join(','))||s.navigationTargets?.some(b=>b.x===p.x&&b.y===p.y&&b.z===p.z)||s.places?.some(b=>b.position.x===p.x&&b.position.y===p.y&&b.position.z===p.z)||s.recovery?.deaths.some(d=>!!s.dimension&&d.dimension===s.dimension&&Math.floor(d.position.x)===p.x&&Math.floor(d.position.y)===p.y&&Math.floor(d.position.z)===p.z));}
 export function candidates(s: Snapshot, plan?: Plan): Action[] {
   if (!s.ready || s.health <= 0) return ['idle'];
   if(s.health<=6)return s.enemies?.length ? ['idle','flee'] : s.canEat&&s.food<20 ? ['idle','eat'] : ['idle'];

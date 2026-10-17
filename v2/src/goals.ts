@@ -12,6 +12,8 @@ export type GoalEvidence={id:string;kind:'observation'|'action'|'operator';at:nu
 export type GoalReview={revision:number;needsReview:boolean;observationId:string;goals:Goal[];evidence:GoalEvidence[]};
 type Data={schema:1;profile:string;revision:number;goals:Goal[];evidence:GoalEvidence[];revisions:Goal[]};
 const text=(v:unknown,max:number)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
+// Normalize only an absent optional pause reason; paused goals still require one.
+export function normalizeGoalUpdates(raw:unknown):unknown{return Array.isArray(raw)?raw.map(g=>g&&typeof g==='object'&&g.status!=='paused'&&g.pauseReason===null?Object.fromEntries(Object.entries(g).filter(([k])=>k!=='pauseReason')):g):raw;}
 export function validateGoalUpdates(raw:unknown):asserts raw is GoalDraft[]{
  if(!Array.isArray(raw)||raw.length>8)throw Error('Invalid goal updates');const ids=new Set();
  for(const g of raw){if(!g||!text(g.id,60)||!/^[a-zA-Z0-9_-]+$/.test(g.id)||ids.has(g.id)||!text(g.description,400)||!text(g.reason,500)||!text(g.successCriteria,400)||!['active','paused','completed','abandoned'].includes(g.status)||!Array.isArray(g.evidenceIds)||g.evidenceIds.length<1||g.evidenceIds.length>8||!g.evidenceIds.every((x:unknown)=>text(x,100))||(g.status==='paused'&&!text(g.pauseReason,400))||(g.pauseReason!==undefined&&!text(g.pauseReason,400)))throw Error('Invalid goal update');ids.add(g.id);}

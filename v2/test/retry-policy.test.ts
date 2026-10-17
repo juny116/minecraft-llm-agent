@@ -56,3 +56,13 @@ test('blocked preferred action does not starve JEV of legal observation choices 
  const r=new Runtime(w,{plan:async()=>({...p}),choose:async(_s,_p,options)=>{assert.ok(!options.includes('mine'));assert.ok(options.includes('look'));chosen++;return {action:'look',confidence:.1};}},{planMs:60000,actionMs:1000,minConfidence:.5},()=>{}) as any;
  r.lastReady=true;await r.refreshPlan();await r.tick();assert.equal(chosen,1);assert.equal(r.planning.recentActions.at(-1).decision.action,'look');r.close();
 });
+
+test('craft retries ignore unrelated dropped entities and slot reorder but allow table observation',()=>{
+ const r=new RetryPolicy(),s=new MockWorld().snapshot(),plan:Plan={goal:'tools',preferred:'craft',craft:{item:'wooden_axe',count:1}};
+ r.record('craft',plan,s,true,'Missing table');r.record('craft',plan,s,true,'Missing table');s.position.x+=.6;s.visibleItems=[{id:99,name:'stick',count:1,position:{x:10,y:64,z:10}}];
+ assert.equal(r.blocked('craft',plan,s),true);s.vision!.blocks.push({name:'crafting_table',position:{x:1,y:64,z:0},lastSeen:1});assert.equal(r.blocked('craft',plan,s),false);
+});
+
+test('unrelated hand items cannot reset a visibility failure',()=>{
+ const r=new RetryPolicy(),s=new MockWorld().snapshot();r.record('mine',p,s,true,'Block not in view');s.equipment=[{slot:'hand',name:'stick'}];r.record('mine',p,s,true,'Block not in view');s.equipment=[{slot:'hand',name:'bread'}];assert.equal(r.blocked('mine',p,s),true);s.position.x+=1;assert.equal(r.blocked('mine',p,s),false);
+});

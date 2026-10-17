@@ -9,6 +9,8 @@ export type Speech={aliases?:AliasUpdate[];to:string;kind:'proposal'|'accept'|'d
 type PromiseRecord=NonNullable<Speech['promise']>&{sourceMessage:string;updatedAt:number};
 type SocialData={routes?:Record<string,{route:import('./supervision.js').Route|'handled';at:number}>;aliases?:(AliasUpdate&{speaker:string;at:number})[];reportKeys?:string[];schema:1;self:string;events:ChatEvent[];promises:PromiseRecord[];actionEvidence:{id:string;at:number;action:Action;outcome:string;result:string}[]};
 export function validateSpeech(s:any):Speech{
+ // Responses are ordinary chat, not a separate action or commitment type.
+ if(s&&['answer','reply'].includes(s.kind))s={...s,kind:'chat'};
  if(!s||!['proposal','accept','decline','question','report','warning','chat'].includes(s.kind)||typeof s.to!=='string'||!/^([A-Za-z0-9_]{1,16}|all)$/.test(s.to)||typeof s.text!=='string'||!s.text.trim()||s.text.length>180||/[\r\n\u0000-\u001f\u007f]/.test(s.text)||s.text.trimStart().startsWith('/')||(s.replyTo!==undefined&&typeof s.replyTo!=='string'))throw Error('Invalid speech');
  if(s.promise){const p=s.promise;if(typeof p.id!=='string'||!/^[a-zA-Z0-9_-]{1,60}$/.test(p.id)||typeof p.task!=='string'||!p.task.trim()||p.task.length>200||!actions.includes(p.action)||!['accepted','cancelled','completed'].includes(p.status)||(p.actionEvidence!==undefined&&typeof p.actionEvidence!=='string'))throw Error('Invalid promise');}
  return structuredClone(s);

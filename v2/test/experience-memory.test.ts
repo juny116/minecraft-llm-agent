@@ -79,3 +79,22 @@ test('reflection retrieves prior successes and failures even before any guidelin
  const latest=m.add(record()),input=m.reflection();assert.equal(input.through,3);assert.equal(input.episodes[0].id,latest);assert.ok(input.episodes.some(e=>e.id===success));assert.ok(input.episodes.some(e=>e.id===failure));assert.equal(new Set(input.episodes.map(e=>e.id)).size,input.episodes.length);
  m.apply(input,[]);assert.equal(m.pending(),0);
 });
+
+test('passive backlog is explicitly summarized without deleting raw experience or skipping failures',t=>{
+ const {m,dir}=fixture(t);for(let i=0;i<30;i++)m.add({...record(),decision:{action:'look',confidence:1},outcome:'succeeded'});
+ const failed=m.add({...record(),decision:{action:'look',confidence:1},outcome:'failed'});const input=m.reflection();
+ assert.equal(input.through,31);assert.equal(input.passiveSummary?.count,30);assert.ok(input.episodes.some(e=>e.id===failed));assert.equal(input.episodes.length,3);
+ m.apply(input,[]);assert.equal(m.pending(),0);assert.equal(JSON.parse(readFileSync(join(dir,'memory.json'),'utf8')).episodes.length,31);
+});
+
+test('reflection retains every reference from two maximal guides alongside a full new batch',t=>{
+ const {dir,m}=fixture(t);const ids=Array.from({length:32},()=>m.add(record()));
+ const data=JSON.parse(readFileSync(join(dir,'memory.json'),'utf8'));data.reviewed=32;
+ data.guides=[0,1].map(i=>({...draft(ids[i*16]),id:'guide_'+i,scope:{species:[],equipment:[],health:[0,20],action:'attack'},support:ids.slice(i*16,i*16+8),counterexamples:ids.slice(i*16+8,i*16+16),version:1,updatedAt:1,model:'fake'}));
+ writeFileSync(join(dir,'memory.json'),JSON.stringify(data));
+ const passive={...record(),decision:{action:'idle' as const,confidence:1},outcome:'succeeded' as const};
+ m.add(passive);m.add(passive);for(let i=0;i<8;i++)m.add(record());
+ const input=m.reflection(),supplied=new Set(input.episodes.map(e=>e.id));
+ assert.ok(input.episodes.length>40);assert.ok(input.episodes.length<=54);
+ for(const id of ids)assert.ok(supplied.has(id));m.apply(input,input.guides);
+});

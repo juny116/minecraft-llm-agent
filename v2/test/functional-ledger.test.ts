@@ -29,3 +29,8 @@ test('per-request unknown ceilings persist without blocking a settled next run',
   const next=new FunctionalLedger(file,10,1);next.finish();
  }finally{rmSync(dir,{recursive:true});}
 });
+
+test('explicit larger authorization retains past costs and rejects implicit reuse',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'ledger-raise-')),file=join(dir,'ledger.json');
+ try{const first=new FunctionalLedger(file,1,.1);first.finish();const raised=new FunctionalLedger(file,1,.1,14);assert.equal(raised.finish().limit,14);assert.throws(()=>new FunctionalLedger(file,1,.1),/Invalid/);const resumed=new FunctionalLedger(file,1,.1,14);assert.equal(resumed.finish().totalUsd,0);}finally{rmSync(dir,{recursive:true,force:true});}
+});

@@ -52,3 +52,13 @@ test('crafting re-aims at the observed table after navigation turns the camera',
  bot.blockAt=()=>({name:'air'});
  await assert.rejects(world.execute('craft',new AbortController().signal,{craft:{item:'oak_planks',count:1}}),/Missing ingredients/);
 });
+
+test('craft reobserves a remembered nearby table instead of treating memory as current visibility',async()=>{
+ const vec=(x:number,y:number,z:number):any=>({x,y,z,scaled:(n:number)=>vec(x*n,y*n,z*n),offset:(a:number,b:number,c:number)=>vec(x+a,y+b,z+c)});const {world,bot}=fixture();let visible=false,looks=0;
+ const table={name:'crafting_table',position:vec(2,0,0)};world.knownPlaces=()=>[{name:'crafting_table',position:{x:2,y:0,z:0},lastSeen:1}];
+ world.table=()=>visible?table:null;world.navigate=async()=>{};world.blockInSight=()=>visible;bot.entity={position:vec(0,0,0)};bot.lookAt=async()=>{looks++;visible=true;};bot.blockAt=()=>table;
+ bot.recipesFor=(_id:any,_meta:any,_count:any,t:any)=>t?[{result:{count:4},delta:[{id:1,metadata:null,count:-1}]}]:[];
+ assert.equal(await world.execute('craft',new AbortController().signal,{craft:{item:'oak_planks',count:1}}),'Crafted 4 oak_planks');assert.ok(looks>=2);
+ visible=false;bot.lookAt=async()=>{looks++;};bot.blockAt=()=>({name:'air'});
+ await assert.rejects(world.execute('craft',new AbortController().signal,{craft:{item:'oak_planks',count:1}}),/Missing/);
+});

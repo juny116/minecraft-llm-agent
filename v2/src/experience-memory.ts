@@ -7,7 +7,7 @@ import {actions} from './types.js';
 export type Episode={id:string;session:string;record:ActionRecord;guidanceUsed:{id:string;version:number}[]};
 export type GuideDraft={id:string;status:'active'|'retired';text:string;uncertainty:string;scope:{species:string[];equipment:string[];health:[number,number];action:Action};support:string[];counterexamples:string[]};
 export type Guide=GuideDraft&{version:number;updatedAt:number;model:string};
-export type Reflection={revision:number;through:number;episodes:Episode[];guides:Guide[]};
+export type Reflection={feedback?:string;passiveSummary?:{count:number;byAction:Record<string,number>;note:string};revision:number;through:number;episodes:Episode[];guides:Guide[]};
 type Data={schema:1;profile:string;revision:number;reviewed:number;episodes:Episode[];guides:Guide[];revisions:Guide[]};
 export class ExperienceMemory {
  readonly session=randomUUID();
@@ -43,17 +43,32 @@ export class ExperienceMemory {
  reflection():Reflection{
   this.data=this.read();const d=this.data;
   // Review the next bounded batch, never silently skip an unreviewed backlog.
-  const batch=d.episodes.slice(d.reviewed,d.reviewed+8);
+  const batch:Episode[]=[],passive:Episode[]=[];let end=d.reviewed;
+  // Preserve raw episodes. Summarize only unchanged successful idle/look, in order.
+  for(const e of d.episodes.slice(d.reviewed,d.reviewed+128)){
+   const r=e.record,unchanged=r.outcome==='succeeded'&&['idle','look'].includes(r.decision.action)&&r.changes.health===0&&r.changes.food===0&&!Object.values(r.changes.inventory).some(n=>n!==0)&&JSON.stringify(r.before.position)===JSON.stringify(r.after.position)&&!r.changes.enemiesEntered.length&&!r.changes.enemiesLeft.length;
+   if(unchanged)passive.push(e);else batch.push(e);end++;
+   if(batch.length>=8)break;
+  }
+  const byAction:Record<string,number>={};for(const e of passive)byAction[e.record.decision.action]=(byAction[e.record.decision.action]??0)+1;
+  batch.push(...passive.slice(0,1));if(passive.length>1)batch.push(passive[passive.length-1]);
   const relevant=d.guides.filter(g=>batch.some(e=>g.scope.action===e.record.decision.action||e.record.before.enemies.some(x=>g.scope.species.includes(x.kind)))).slice(-2);
   const refs=new Set(relevant.flatMap(g=>[...g.support,...g.counterexamples]));
   const prior=d.episodes.slice(0,d.reviewed),contrasts:Episode[]=[];
   for(const action of new Set(batch.map(e=>e.record.decision.action).filter(a=>a!=='look'&&a!=='idle'))){
    for(const success of [true,false])contrasts.push(...prior.filter(e=>e.record.decision.action===action&&(success?e.record.outcome==='succeeded':['failed','partial'].includes(e.record.outcome))).slice(-2));
   }
-  const episodes=[...new Map([...batch,...d.episodes.filter(e=>refs.has(e.id)),...contrasts.slice(-12)].map(e=>[e.id,e])).values()].slice(0,40);
-  return structuredClone({revision:d.revision,through:d.reviewed+batch.length,episodes,guides:relevant});
+  const episodes=[...new Map([...batch,...d.episodes.filter(e=>refs.has(e.id)),...contrasts.slice(-12)].map(e=>[e.id,e])).values()]; // At most 10 batch + 32 referenced + 12 contrast episodes; never truncate referenced evidence.
+  return structuredClone({revision:d.revision,through:end,episodes,guides:relevant,passiveSummary:{count:passive.length,byAction,note:'Raw episodes retained. Unchanged successful idle/look summarized; this does not prove no new visual information. Only explicitly supplied episode IDs may support guidance.'}});
  }
  private validate(g:any,ids:Set<string>,historical=false){
+  if(g?.scope&&(!Array.isArray(g.scope.health)||g.scope.health.length!==2||!g.scope.health.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)||g.scope.health[0]>g.scope.health[1]))throw Error('Invalid guideline scope.health: exactly [minimum,maximum] in 0..20; use [0,20] for any health, never []');
+  if(g&&typeof g.text==='string'&&g.text.length>600)throw Error('Invalid guideline text: max 600 characters');
+  if(g&&typeof g.uncertainty==='string'&&g.uncertainty.length>300)throw Error('Invalid guideline uncertainty: max 300 characters');
+  if(g&&Array.isArray(g.support)&&g.support.length>8)throw Error('Invalid guideline support: max 8 episode IDs');
+  if(g&&Array.isArray(g.counterexamples)&&g.counterexamples.length>8)throw Error('Invalid guideline counterexamples: max 8 episode IDs; preserve prior counterexamples');
+  if(Array.isArray(g?.support)&&Array.isArray(g?.counterexamples)&&[...g.support,...g.counterexamples].some(x=>!ids.has(x)))throw Error('Invalid guideline evidence: copy only exact episode IDs supplied in this reflection; no invented or altered IDs');
+  if(Array.isArray(g?.support)&&Array.isArray(g?.counterexamples)&&g.support.some((x:string)=>g.counterexamples.includes(x)))throw Error('Invalid guideline evidence: support and counterexamples must not overlap');
   const list=(x:any,max:number)=>Array.isArray(x)&&x.length<=max&&x.every((v:any)=>typeof v==='string'&&v.length>0&&v.length<=100);
   if(!g||typeof g.id!=='string'||!/^[a-zA-Z0-9_-]{1,60}$/.test(g.id)||!['active','retired'].includes(g.status)||typeof g.text!=='string'||!g.text.trim()||g.text.length>600||typeof g.uncertainty!=='string'||!g.uncertainty.trim()||g.uncertainty.length>300||!g.scope||!(actions.includes(g.scope.action)||historical&&['gather','dig_block','inspect_chest'].includes(g.scope.action))||!list(g.scope.species,6)||!list(g.scope.equipment,6)||!Array.isArray(g.scope.health)||g.scope.health.length!==2||!g.scope.health.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)||g.scope.health[0]>g.scope.health[1]||!list(g.support,8)||!g.support.length||!list(g.counterexamples,8)||[...g.support,...g.counterexamples].some(x=>!ids.has(x))||g.support.some((x:string)=>g.counterexamples.includes(x)))throw Error('Invalid or unsupported guideline');
  }

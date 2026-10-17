@@ -11,7 +11,7 @@ class V {constructor(public x:number,public y:number,public z:number){} offset(x
 const p:Plan={goal:'mine observed stone',preferred:'mine',mine:{position:{x:2,y:0,z:0},expected:'stone'}};
 function setup(){
  const w=Object.create(MineflayerWorld.prototype) as any;let broken=false;let received=0;let attacks=0;let stops=0;const target={name:'stone',stateId:1,diggable:true,position:new V(2,0,0)};
- w.containers=[];w.visible=[target];w.memory={observe:()=>{}};w.observe=()=>{};w.blockInSight=()=>true;w.entityVisible=()=>true;w.enemies=()=>[];w.navigate=async()=>{};w.stop=()=>{stops++;};
+ w.containers=[];w.visible=[target];w.memory={observe:()=>{}};w.observe=()=>{};w.blockInSight=()=>true;w.miningFace=()=>new V(0,0,1);w.entityVisible=()=>true;w.enemies=()=>[];w.navigate=async()=>{};w.stop=()=>{stops++;};
  const bot=Object.assign(new EventEmitter(),{health:20,entity:{position:new V(0,0,0)},entities:{} as Record<string,any>,inventory:{items:()=>received?[{name:'cobblestone',count:received}]:[]},blockAt:()=>broken?{name:'air'}:target,lookAt:async()=>{},pathfinder:{bestHarvestTool:()=>null},canDigBlock:()=>true,heldItem:{name:'iron_pickaxe',enchants:[{name:'silk_touch',lvl:1}],durabilityUsed:4},clickWindow:async()=>{},equip:async()=>{},stopDigging:()=>{stops++;},dig:async()=>{attacks++;broken=true;}});w.bot=bot;
  return {w,bot,breakBlock:()=>{broken=true;},receive:(n=1)=>received+=n,stats:()=>({attacks,stops}),drop:()=>{const e={id:42,name:'item',position:new V(2,0,0),getDroppedItem:()=>({name:'cobblestone',count:1})};bot.entities['42']=e;bot.emit('itemDrop',e);}};
 }
@@ -82,4 +82,15 @@ test('an unavailable explicit tool or stale stack slot is excluded without restr
  s.inventory=[{name:'wooden_axe',count:1,slot:9}];
  assert.equal(candidates(s,{goal:'mine',preferred:'mine',mine:{...mine,tool:'wooden_axe',toolSlot:10}}).includes('mine'),false);
  assert.equal(candidates(s,{goal:'mine',preferred:'mine',mine:{...mine,tool:'wooden_axe',toolSlot:9}}).includes('mine'),true);
+});
+
+test('confirmed ray face is passed explicitly to digging and occlusion still rejects a target',()=>{
+ const f=setup();delete f.w.miningFace;Object.assign(f.bot.entity,{yaw:-Math.PI/2,pitch:0});
+ (f.bot as any).world={raycast:()=>({position:new V(2,0,0),face:4})};
+ assert.deepEqual(f.w.miningFace(f.bot.blockAt()),new V(-1,0,0));
+ (f.bot as any).world.raycast=()=>({position:new V(1,0,0),face:4});assert.equal(f.w.miningFace(f.bot.blockAt()),undefined);
+});
+test('mining uses the previously verified face instead of the independent library raycast heuristic',async()=>{
+ const f=setup();f.bot.dig=(async(_target:any,_look:any,face:any)=>{assert.deepEqual(face,new V(0,0,1));f.breakBlock();}) as any;
+ const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.blockBroken,true);
 });

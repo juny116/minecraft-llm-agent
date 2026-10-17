@@ -12,7 +12,7 @@ const plan:Plan={goal:'my chosen structure',preferred:'place_block',build:{item:
 function fixture(){
  const w=Object.create(MineflayerWorld.prototype) as any;let count=5,placed=0,dug=0;const cells=new Map<string,any>();const key=(p:V)=>`${p.x},${p.y},${p.z}`;
  const put=(p:any,name:string)=>cells.set(key(p),{name,position:new V(p.x,p.y,p.z),stateId:name==='dirt'?1:name==='air'?0:2,diggable:true});put(reference,'dirt');put(position,'air');
- w.visible=[{name:'dirt',position:reference}];w.observe=()=>{};w.memory={observe:()=>{}};w.stop=()=>{};w.navigate=async()=>{};w.blockInSight=()=>true;
+ w.visible=[{name:'dirt',position:reference}];w.observe=()=>{};w.memory={observe:()=>{}};w.stop=()=>{};w.navigate=async()=>{};w.blockInSight=()=>true;w.miningFace=()=>new V(0,1,0);
  const bot={entity:{position:new V(0,0,0),width:.6,height:1.8},entities:{},registry:{blocksByName:{oak_planks:{}}},inventory:{items:()=>[{name:'oak_planks',count,type:1}]},blockAt:(p:V)=>cells.get(key(p)),pathfinder:{bestHarvestTool:()=>null},canDigBlock:()=>true,lookAt:async()=>{},equip:async()=>{},clickWindow:async()=>{},getControlState:()=>false,setControlState:()=>{},world:{raycast:()=>null},placeBlock:async()=>{placed++;count--;put(position,'oak_planks');},dig:async(b:any)=>{dug++;put(b.position,'air');}};Object.assign(bot,{on:EventEmitter.prototype.on,removeListener:EventEmitter.prototype.removeListener,stopDigging:()=>{}});w.bot=bot;
  return {w,bot,put,stats:()=>({count,placed,dug})};
 }

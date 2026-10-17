@@ -1,3 +1,6 @@
+import {reachedCell} from './reach.js';
+import {localNavigationTargets} from './navigation.js';
+import {tableSupportMaterial} from './building.js';
 import {knownDestination} from './types.js';
 import {RecoveryMemory} from './recovery.js';
 import {craftFailure} from './craft-feedback.js';
@@ -34,6 +37,19 @@ export class MineflayerWorld implements World {
   private memory = new PlaceMemory();
   private visible: import('./vision.js').SeenBlock[] = [];
   private observedAt = 0;
+  private navigationHintMovements?:ReturnType<typeof observedMovements>;private navigationHintsAt=0;private navigationHints:import('./vision.js').Position[]=[];
+  private navigationTargets(){
+    if(!this.ready)return [];const now=Date.now();if(now-this.navigationHintsAt<2000)return structuredClone(this.navigationHints);this.navigationHintsAt=now;
+    this.navigationHints=localNavigationTargets(this.bot.entity.position,this.memory.snapshot(),p=>{
+      if(reachedCell(this.bot.entity.position,p,2))return false;
+      try{
+        this.navigationHintMovements??=observedMovements(this.bot,this.memory);
+        // getPathTo mutates pathfinder's shared A* context. Queries must be isolated from active goto.
+        const search=this.bot.pathfinder.getPathFromTo(this.navigationHintMovements,this.bot.entity.position,new goals.GoalNear(p.x,p.y,p.z,2),{timeout:40,tickTimeout:8,searchRadius:12,optimizePath:false});
+        return search.next().value?.result.status==='success';
+      }catch{return false;}
+    });return structuredClone(this.navigationHints);
+  }
   private observationDimension = '';
   private incomingDamage=new IncomingDamage();
   private combatEvidence=new CombatEvidenceStore();
@@ -49,7 +65,7 @@ export class MineflayerWorld implements World {
     // The full declare_recipes catalog is intentionally never added to observations.
     this.bot._client.on('unlock_recipes', packet => this.recipeBook.apply(packet));
     this.bot.on('spawn', () => {
-      this.generation++;this.dead=false;this.lastAlivePossessions=undefined;this.memory.clear();this.visible=[];this.containers=[];this.combatEvidence.clear();this.incomingDamage.clear();
+      this.generation++;this.dead=false;this.lastAlivePossessions=undefined;this.memory.clear();this.knownCacheAt=-1;this.knownCache=[];this.navigationHints=[];this.navigationHintsAt=0;this.visible=[];this.containers=[];this.combatEvidence.clear();this.incomingDamage.clear();
       const movement = observedMovements(this.bot,this.memory);
       this.bot.pathfinder.setMovements(movement); this.ready = true;
       this.recovery.respawn(this.snapshot());log('spawn',{generation:this.generation});
@@ -67,7 +83,7 @@ export class MineflayerWorld implements World {
     });
     this.bot.on('entityDead',entity=>{if(entity&&this.entityVisible(entity))this.combatEvidence.death(entity.id,Date.now());});
     this.bot.on('death', () => { const death=this.recovery.death(this.snapshot(),this.lastAlivePossessions);this.deathCount++;this.dead=true;this.ready=false;this.stop();log('death',{death}); });
-    this.bot.on('end', () => { this.saveSpatial(true); this.ready = false; this.recipeBook.reset(); this.memory.clear(); this.containers=[]; this.visible=[]; this.combatEvidence.clear();this.incomingDamage.clear(); log('disconnected'); });
+    this.bot.on('end', () => { this.saveSpatial(true); this.ready = false; this.recipeBook.reset(); this.memory.clear();this.knownCacheAt=-1;this.knownCache=[];this.navigationHints=[];this.navigationHintsAt=0; this.containers=[]; this.visible=[]; this.combatEvidence.clear();this.incomingDamage.clear(); log('disconnected'); });
     this.bot.on('kicked', () => { this.ready = false; log('kicked'); });
     this.bot.on('error', () => log('connection_error')); // no raw credentials/packets
     this.bot.on('chat', (sender, message) => {
@@ -150,7 +166,7 @@ export class MineflayerWorld implements World {
       const clock=new AbortController(),timer=setTimeout(()=>clock.abort(new DOMException('Mining attempt budget exhausted','TimeoutError')),request.maxMs??30000),timeout=clock.signal,digSignal=AbortSignal.any([active,timeout]);
       let stopDig:()=>void=()=>{};
       const interrupted=new Promise<never>((_,reject)=>{stopDig=()=>{this.bot.stopDigging();reject(digSignal.reason);};if(digSignal.aborted)stopDig();else digSignal.addEventListener('abort',stopDig,{once:true});});
-      try{await Promise.race([this.bot.dig(target,false,'raycast'),interrupted]);}catch(error){
+      try{const face=this.miningFace(target);if(!face)throw Error('Block has no currently visible mining face');await Promise.race([this.bot.dig(target,false,face),interrupted]);}catch(error){
         result.blockBroken=['air','cave_air','void_air'].includes(this.bot.blockAt(vec)?.name??'');
         if(timeout.aborted&&!active.aborted){result.status='time_limit';result.detail='Not completed within attempt budget; this does not establish impossibility';}else throw error;
       }finally{clearTimeout(timer);digSignal.removeEventListener('abort',stopDig);digEnded=Date.now();}
@@ -229,6 +245,16 @@ export class MineflayerWorld implements World {
     this.containers=this.containers.slice(-16);
   }
   // Exact ray to a known target supplements the sparse observation grid; it never discovers hidden targets.
+  private miningFace(block:NonNullable<ReturnType<mineflayer.Bot['blockAt']>>){
+    const entity=this.bot.entity,eye=entity.position.offset(0,(entity as typeof entity & {eyeHeight?:number}).eyeHeight??1.62,0);
+    const point=visibleBlockFace(eye,this.bot.entity.yaw,this.bot.entity.pitch,block.position,(d,length)=>(this.bot.world.raycast(eye,eye.scaled(0).offset(d.x,d.y,d.z),length) as any)?.position??null);
+    if(!point)return;
+    const delta=eye.scaled(0).offset(point.x-eye.x,point.y-eye.y,point.z-eye.z),length=delta.norm();
+    const hit=this.bot.world.raycast(eye,delta.scaled(1/length),length+.01) as any;
+    if(!hit||!sameCell(hit.position,block.position))return;
+    const normal=[[0,-1,0],[0,1,0],[0,0,-1],[0,0,1],[-1,0,0],[1,0,0]][hit.face];
+    if(normal)return eye.scaled(0).offset(normal[0],normal[1],normal[2]);
+  }
   private blockInSight(block:NonNullable<ReturnType<mineflayer.Bot['blockAt']>>){
     const eye=this.bot.entity.position.offset(0,1.62,0);
     return !!visibleBlockFace(eye,this.bot.entity.yaw,this.bot.entity.pitch,block.position,(d,length)=>{
@@ -238,7 +264,7 @@ export class MineflayerWorld implements World {
   }
   private placementSupport(expected?:import('./vision.js').Position){
     this.observe();
-    return this.visible.filter(b=>(!expected||samePosition(b.position,expected))&&['grass_block','dirt','stone','bedrock','cobblestone','oak_planks','birch_planks'].includes(b.name)&&b.position.y===Math.floor(this.bot.entity.position.y)-1)
+    return this.visible.filter(b=>(!expected||samePosition(b.position,expected))&&tableSupportMaterial(b.name)&&b.position.y===Math.floor(this.bot.entity.position.y)-1)
       .map(b=>this.bot.blockAt(this.bot.entity.position.scaled(0).offset(b.position.x,b.position.y,b.position.z)))
       .find(b=>b&&b.position.distanceTo(this.bot.entity.position)<4&&b.boundingBox==='block'&&
         this.bot.blockAt(b.position.offset(0,1,0))?.name==='air'&&this.bot.blockAt(b.position.offset(0,2,0))?.name==='air'&&
@@ -342,7 +368,7 @@ export class MineflayerWorld implements World {
   private observe(force = false) {
     if (!this.ready || !this.bot.entity) return;
     const dimension = String(this.bot.game.dimension);
-    if (dimension !== this.observationDimension) { this.saveSpatial(true);this.memory.clear(); this.containers=this.spatial?.get(dimension).containers??[]; this.observationDimension = dimension; }
+    if (dimension !== this.observationDimension) { this.saveSpatial(true);this.memory.clear();this.knownCacheAt=-1;this.knownCache=[];this.navigationHints=[];this.navigationHintsAt=0; this.containers=this.spatial?.get(dimension).containers??[]; this.observationDimension = dimension; }
     if (!force && Date.now()-this.observedAt<500) return;
     this.observedAt=Date.now();
     const e=this.bot.entity, eye=e.position.offset(0, (e as typeof e & {eyeHeight?:number}).eyeHeight ?? 1.62, 0);
@@ -355,7 +381,11 @@ export class MineflayerWorld implements World {
     this.saveSpatial();
   }
   private saveSpatial(force=false){if(!this.spatial||!this.observationDimension)return;this.spatial.update(this.observationDimension,this.memory.snapshot(),this.containers);this.spatial.flush(force);}
-  private knownPlaces(){const m=new PlaceMemory();m.observe(this.spatial?.get(this.observationDimension).places??[]);m.observe(this.memory.snapshot());return m.snapshot();}
+  private knownCacheAt=-1;private knownCacheDimension='';private knownCache:import('./vision.js').SeenBlock[]=[];
+  private knownPlaces(){
+    if(!this.knownCache||this.knownCacheAt!==this.observedAt||this.knownCacheDimension!==this.observationDimension){const m=new PlaceMemory();m.observe(this.spatial?.get(this.observationDimension).places??[]);m.observe(this.memory.snapshot());this.knownCache=m.snapshot();this.knownCacheAt=this.observedAt;this.knownCacheDimension=this.observationDimension;}
+    return structuredClone(this.knownCache);
+  }
   private visibleBlock(matches: (name: string, position: import('./vision.js').Position) => boolean) {
     this.observe();
     const seen=this.visible.filter(b=>matches(b.name,b.position)).sort((a,b)=>this.bot.entity.position.distanceTo(this.bot.entity.position.scaled(0).offset(a.position.x,a.position.y,a.position.z))-this.bot.entity.position.distanceTo(this.bot.entity.position.scaled(0).offset(b.position.x,b.position.y,b.position.z)))[0];
@@ -473,8 +503,9 @@ export class MineflayerWorld implements World {
       const item=this.bot.registry.itemsByName[name];
       return item && this.bot.recipesFor(item.id,null,1,table).length>0;
     }))] : [];
-    const snapshot:Snapshot={ visibleItems:this.ready?this.visibleItems():[],placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
-      vision: {yaw:this.bot.entity?.yaw ?? 0,pitch:this.bot.entity?.pitch ?? 0,blocks:summarizePlaces(structuredClone(this.visible))}, places:summarizePlaces(this.knownPlaces()),craftable,
+    const knownPlaces=this.knownPlaces();
+    const snapshot:Snapshot={ observedDestinationKeys:knownPlaces.map(b=>[b.position.x,b.position.y,b.position.z].join(',')),navigationTargets:this.navigationTargets(),visibleItems:this.ready?this.visibleItems():[],placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
+      vision: {yaw:this.bot.entity?.yaw ?? 0,pitch:this.bot.entity?.pitch ?? 0,blocks:summarizePlaces(structuredClone(this.visible))}, places:summarizePlaces(knownPlaces),craftable,
       dimension:String(this.bot.game?.dimension??'unknown'),environment:{inWater:!!(this.bot.entity as any)?.isInWater,inLava:!!(this.bot.entity as any)?.isInLava,onGround:!!this.bot.entity?.onGround,oxygen:(this.bot as any).oxygenLevel},lifecycle:{generation:this.generation,deathCount:this.deathCount,phase:this.dead?'dead':this.ready?'alive':'connecting',lastDeath:this.recovery.context().deaths.at(-1)},recovery:this.recovery.context(),
       ready: this.ready, health: this.bot.health ?? 0, food: this.bot.food ?? 0, logs,
       canMine: this.ready && this.visible.some(b=>!['bedrock','water','lava','air'].includes(b.name)), canDeposit: this.ready && this.bot.inventory.items().length>0 && this.visible.some(b=>['chest','furnace','blast_furnace','smoker'].includes(b.name)),
@@ -497,7 +528,7 @@ export class MineflayerWorld implements World {
       if(['place_table','inspect_container','withdraw','deposit','give'].includes(action))return await this.interact(action,signal,plan);
       if(action==='attack'||action==='flee')return await this.fight(action,signal);
       if (action === 'look') {
-        await this.bot.look(plan?.look?.yaw ?? this.bot.entity.yaw+Math.PI/2, plan?.look?.pitch ?? 0, false);
+        await this.bot.look(plan?.look?.yaw ?? this.bot.entity.yaw+Math.PI/2, plan?.look?.pitch ?? (Math.abs(this.bot.entity.pitch)<.2?-Math.PI/4:0), false);
         this.observe(true);
       }
       if (action === 'move') {
@@ -513,6 +544,13 @@ export class MineflayerWorld implements World {
         if(!item) throw new Error('Unknown item');
         const inventoryRecipe=this.bot.recipesFor(item.id,null,1,null)[0];
         let table=inventoryRecipe ? null : this.table();
+        if(!inventoryRecipe&&!table){
+          // Reorient toward a previously observed nearby workstation; memory is not visibility.
+          const remembered=this.knownPlaces().filter(b=>b.name==='crafting_table').sort((a,b)=>Math.hypot(a.position.x-this.bot.entity.position.x,a.position.y-this.bot.entity.position.y,a.position.z-this.bot.entity.position.z)-Math.hypot(b.position.x-this.bot.entity.position.x,b.position.y-this.bot.entity.position.y,b.position.z-this.bot.entity.position.z))[0];
+          if(remembered&&Math.hypot(remembered.position.x-this.bot.entity.position.x,remembered.position.y-this.bot.entity.position.y,remembered.position.z-this.bot.entity.position.z)<=6){
+            signal.throwIfAborted();await this.bot.lookAt(this.bot.entity.position.scaled(0).offset(remembered.position.x+.5,remembered.position.y+.5,remembered.position.z+.5),false);signal.throwIfAborted();this.observe(true);table=this.table();
+          }
+        }
         if(table) {
           await this.navigate(new goals.GoalNear(table.position.x,table.position.y,table.position.z,2),signal);
           signal.throwIfAborted(); await this.bot.lookAt(table.position.offset(.5,.5,.5),false);signal.throwIfAborted();this.observe(true);

@@ -1,3 +1,4 @@
+import {executionOptions} from '../src/supervision.js';
 import test from 'node:test';import assert from 'node:assert/strict';import {setTimeout as delay} from 'node:timers/promises';
 import {mkdtempSync,rmSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {Runtime} from '../src/runtime.js';import {MockWorld} from '../src/mock.js';import {MockBrain,ApiBrain,Budget} from '../src/providers.js';import {config} from '../src/config.js';
@@ -11,11 +12,11 @@ class SlowWorld extends MockWorld{starts=0;running=0;maxRunning=0;aborts=0;overr
 test('continuous selector keeps same execution while long and medium reasoning are pending',async()=>{
  const w=new SlowWorld();let calls=0;const b=brain(async(_s,i)=>{calls++;return decision(i.execution?'continue':i.options.find(o=>o.action==='mine')!.id);});
  b.plan=()=>new Promise(()=>{});b.reviewGoals=()=>new Promise(()=>{});const r=new Runtime(w,b,opts,()=>{});
- await r.tick();await r.tick();await r.tick();assert.equal(calls,3);assert.equal(w.starts,1);assert.equal(w.aborts,0);r.close();await flush();assert.equal(w.running,0);
+ primeExecution(r);await r.tick();await r.tick();await r.tick();assert.equal(calls,3);assert.equal(w.starts,1);assert.equal(w.aborts,0);r.close();await flush();assert.equal(w.running,0);
 });
 test('switch aborts and joins old executor before starting another; action count unchanged',async()=>{
- const w=new SlowWorld();let call=0;const r=new Runtime(w,brain(async(_s,i)=>decision(++call===1?i.options.find(o=>o.action==='mine')!.id:'wait')),opts,()=>{});
- await r.tick();await r.tick();assert.equal(w.starts,2);assert.equal(w.aborts,1);assert.equal(w.maxRunning,1);assert.equal(actions.length,17);r.close();await flush();
+ const w=new SlowWorld();let call=0;const r=new Runtime(w,brain(async(_s,i)=>decision(++call===1?i.options.find(o=>o.action==='mine')!.id:'stop')),opts,()=>{});
+ primeExecution(r);await r.tick();await r.tick();await r.tick();await r.tick();assert.equal(w.starts,2);assert.equal(w.aborts,1);assert.equal(w.maxRunning,1);assert.equal(actions.length,17);r.close();await flush();
 });
 test('pending supervisor is never duplicated and stale threat response cannot switch',async()=>{
  const w=new SlowWorld();let finish!:(d:Supervision)=>void,calls=0;const b=brain(async()=>{calls++;return await new Promise<Supervision>(resolve=>finish=resolve);});const r=new Runtime(w,b,opts,()=>{});
@@ -37,7 +38,7 @@ test('routed messages are queued while a response is pending; other addressees d
 test('death and respawn cancel stale thinking, preserve evidence, and permit recovery abandonment',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'death-'));try{const recovery=new RecoveryMemory(join(dir,'recovery.json')),w=new SlowWorld();w.state.dimension='overworld';w.state.inventory=[{name:'iron_sword',count:1,slot:36}];w.state.environment={inWater:true,inLava:false,onGround:false};let finish!:(p:any)=>void,calls=0;
  const b=brain(async(_s,i)=>decision(i.execution?'continue':i.options.find(o=>o.action==='mine')!.id));const review=b.reviewGoals!;b.reviewGoals=async(s,c,signal)=>{calls++;if(calls===1)return await new Promise(resolve=>finish=resolve);return {...await review(s,c,signal),recoveryDecision:{deathId:s.recovery!.deaths.at(-1)!.id,strategy:'abandon',reason:'Current gear and remembered underwater risk make rebuilding preferable'}};};const r=new Runtime(w,b,{...opts,recovery},()=>{});
- await r.tick();w.state.health=0;w.state.ready=false;await r.tick();await flush();assert.equal(w.aborts,1);w.state.health=20;w.state.ready=true;w.state.inventory=[];w.state.position={x:100,y:70,z:100};await r.tick();finish({goalUpdates:[],activeGoalId:null});await flush();await r.tick(Date.now()+1000);await flush();const d=recovery.context().deaths[0];assert.equal(d.environment?.inWater,true);assert.equal(d.cause,'unconfirmed');assert.equal(d.decision?.strategy,'abandon');assert.equal(d.respawn?.inventory?.length,0);assert.equal(new RecoveryMemory(join(dir,'recovery.json')).context().deaths.length,1);r.close();await flush();}finally{rmSync(dir,{recursive:true});}
+ primeExecution(r);await r.tick();w.state.health=0;w.state.ready=false;await r.tick();await flush();assert.equal(w.aborts,1);w.state.health=20;w.state.ready=true;w.state.inventory=[];w.state.position={x:100,y:70,z:100};await r.tick();finish({goalUpdates:[],activeGoalId:null});await flush();await r.tick(Date.now()+1000);await flush();const d=recovery.context().deaths[0];assert.equal(d.environment?.inWater,true);assert.equal(d.cause,'unconfirmed');assert.equal(d.decision?.strategy,'abandon');assert.equal(d.respawn?.inventory?.length,0);assert.equal(new RecoveryMemory(join(dir,'recovery.json')).context().deaths.length,1);r.close();await flush();}finally{rmSync(dir,{recursive:true});}
 });
 test('death destination is remembered across respawn but never crosses dimensions or supplies invisible drops',()=>{
  const rec=new RecoveryMemory(),w=new MockWorld();w.state.dimension='overworld';rec.death(w.snapshot());w.state.position={x:100,y:64,z:100};w.state.recovery=rec.context();const plan:Plan={goal:'Consider recovery',preferred:'move',destination:{x:0,y:64,z:0}};assert.ok(candidates(w.state,plan).includes('move'));w.state.dimension='the_nether';assert.ok(!candidates(w.state,plan).includes('move'));assert.equal(w.state.visibleItems,undefined);
@@ -47,7 +48,7 @@ test('pilot permits bounded respawn, but still enforces time, budget and repeate
 });
 test('supervisor API sends semantic alias routing in the same request as execution control',async()=>{
  const social=new SocialMemory('Alice');social.ingest([{id:'m',speaker:'Bob',text:'엘리스야, 잠깐 도와줘',at:1}]);const w=new MockWorld();w.state.social=social.context();let calls=0;
- const b=new ApiBrain({...config(),mode:'jev',jevKey:'test',llmKey:'test'},new Budget(2,1),(async(_url:any,init:any)=>{calls++;const req=JSON.parse(init.body);assert.ok(req.questions.message_0);assert.match(req.questions.message_0.instructions,/NOT exact-name/);assert.equal(req.state.inbox[0].text,'엘리스야, 잠깐 도와줘');return Response.json({answers:{action:{type:'choice',choice:'continue',confidence:.8},review:{type:'choice',choice:'none',confidence:1},message_0:{type:'choice',choice:'clarify',confidence:.5}},usage:{input_tokens:100,output_tokens:0}});}) as typeof fetch);
+ const b=new ApiBrain({...config(),mode:'jev',jevKey:'test',llmKey:'test'},new Budget(2,1),(async(_url:any,init:any)=>{calls++;const req=JSON.parse(init.body);assert.ok(req.questions.message_0);assert.match(req.questions.message_0.instructions,/NOT exact-name/);assert.equal(req.state.inbox[0].text,'엘리스야, 잠깐 도와줘');return Response.json({answers:{continuity:{type:'choice',choice:'maintain',confidence:.8},action:{type:'choice',choice:'continue',confidence:.8},review:{type:'choice',choice:'none',confidence:1},message_0:{type:'choice',choice:'clarify',confidence:.5}},usage:{input_tokens:100,output_tokens:0}});}) as typeof fetch);
  const input:SupervisorInput={options:[],execution:{id:1,action:'mine',plan:{goal:'wood',preferred:'mine'},elapsedMs:2000},inbox:social.pendingRouting(),goal:'wood'};const d=await b.supervise(w.snapshot(),input,new AbortController().signal);assert.equal(d.routes.m,'clarify');assert.equal(d.choice,'continue');assert.equal(calls,1);
 });
 
@@ -94,4 +95,46 @@ test('death packet with cleared inventory preserves timestamped last-alive posse
  const observed={at:1234,inventory:[{name:'wooden_pickaxe',count:1,slot:36}],equipment:[{slot:'hand',name:'wooden_pickaxe'}]};
  const d=r.death(s,observed);assert.equal(d.inventory![0].name,'wooden_pickaxe');assert.equal(d.possessionsObservedAt,1234);assert.equal(d.possessionsSource,'last_alive_observation');
  const empty=r.death(s,{at:1250,inventory:[],equipment:[]});assert.deepEqual(empty.inventory,[]);assert.match(r.context().warning,/not proof of actual dropped items/);
+});
+
+test('wait during mining retains the executor, explicit stop remains available',async()=>{
+ const w=new SlowWorld();const r=new Runtime(w,brain(async(_s,i)=>decision(i.execution?'wait':i.options.find(o=>o.action==='mine')!.id)),opts,()=>{});
+ primeExecution(r);await r.tick();await r.tick();assert.equal(w.starts,1);assert.equal(w.aborts,0);r.close();await flush();
+});
+
+test('binary continuity preserves work even when another option scores well, and permits deliberate stop',async()=>{
+ let keep=true;const w=new MockWorld();const b=new ApiBrain({...config(),mode:'jev',jevKey:'test'},new Budget(4,1),(async(_u:any,init:any)=>{
+ const req=JSON.parse(init.body);assert.ok(req.questions.continuity);return Response.json({answers:{continuity:{type:'choice',choice:keep?'maintain':'interrupt',confidence:.01},action:{type:'choice',choice:'stop',confidence:.9},review:{type:'choice',choice:'none',confidence:1}},usage:{input_tokens:10,output_tokens:1}});
+ }) as typeof fetch);
+ const input:SupervisorInput={options:[],execution:{id:1,action:'mine',plan:{goal:'Wood',preferred:'mine'},elapsedMs:1000},inbox:[],goal:'Wood'};
+ assert.equal((await b.supervise(w.snapshot(),input,new AbortController().signal)).choice,'continue');keep=false;assert.equal((await b.supervise(w.snapshot(),input,new AbortController().signal)).choice,'stop');
+});
+
+test('recent heard partner permits proactive dialogue outside current camera view',async()=>{
+ const w=new MockWorld(),social=new SocialMemory('Alice'),now=Date.now();w.state.nearbyPlayers=[];w.state.chatEvents=[{id:'recent',speaker:'Bob',text:'주변에서 재료를 찾고 있어.',at:now}];let calls=0;
+ const b=brain(async()=>decision('wait'));b.communicate=async()=>{calls++;return null;};const rt=new Runtime(w,b,{...opts,social},()=>{});
+ await rt.tick(now);await flush();assert.equal(calls,1);rt.close();
+});
+
+test('transient preference switches do not cancel useful work while danger bypasses confirmation',async()=>{
+ const w=new SlowWorld();let n=0;const b=brain(async(_s,i)=>decision(++n===1?i.options.find(o=>o.action==='mine')!.id:n===3?'continue':'stop'));const rt=new Runtime(w,b,opts,()=>{});
+ primeExecution(rt);await rt.tick();await rt.tick();await rt.tick();await rt.tick();assert.equal(w.aborts,0);
+ w.state.enemies=[{id:9,kind:'zombie',position:{x:1,y:64,z:0},distance:1}];await rt.tick();assert.equal(w.aborts,1);rt.close();await flush();
+});
+
+function primeExecution(r:Runtime){const x=r as any;x.lastReady=true;x.lastLifeKey='true';r.plan={goal:'Gather observed wood',preferred:'mine',mine:{position:{x:1,y:64,z:0},expected:'oak_log'}};}
+
+test('unrelated remembered treetops are not automatic movement proposals',()=>{
+ const s=new MockWorld().snapshot();s.places=[{name:'oak_log',position:{x:0,y:90,z:4},lastSeen:1}];
+ assert.equal(executionOptions(s,{goal:'Observe',preferred:'look'}).filter(o=>o.action==='move').length,0);
+ const p={goal:'Approach remembered tree',preferred:'move' as const,destination:s.places[0].position};
+ assert.equal(executionOptions(s,p).filter(o=>o.action==='move').length,1);
+});
+
+test('hunger permits an urgent switch TO eating, not an urgent switch AWAY from eating',async()=>{
+ const w=new SlowWorld();w.state.food=7;w.state.canEat=true;let n=0;
+ const b=brain(async(_s,i)=>decision(++n===1?i.options.find(o=>o.action==='mine')!.id:n===2?i.options.find(o=>o.action==='eat')!.id:'stop'));
+ const r=new Runtime(w,b,opts,()=>{});primeExecution(r);
+ await r.tick();assert.equal(w.aborts,0);await r.tick();assert.equal(w.aborts,1);assert.equal(r.executionStatus.activeAction,'eat');
+ await r.tick();assert.equal(w.aborts,1);assert.equal(r.executionStatus.activeAction,'eat');r.close();await flush();
 });
