@@ -57,7 +57,11 @@ export class GoalBook{
   for(const u of updates){
    if(u.evidenceIds.some(id=>!allowed.has(id)))throw Error('Invalid goal evidence reference');
    const old=next.goals.find(g=>g.id===u.id);
-   if(old&&['completed','abandoned'].includes(old.status))throw Error('Invalid terminal goal revision; create a new goal');
+   if(old&&['completed','abandoned'].includes(old.status)){
+    // Reaffirmation is not a revision: keep original evidence, reason and timestamps.
+    if(u.status===old.status&&u.description===old.description&&u.successCriteria===old.successCriteria)continue;
+    throw Error(`Invalid terminal goal revision for ${u.id}; omit unchanged terminal goals or create a new goal`);
+   }
    if((u.status==='active'||u.status==='completed')&&!u.evidenceIds.includes(review.observationId))throw Error('Invalid goal activation/completion without fresh observation');
    const g:Goal={id:u.id,description:u.description,reason:u.reason,status:u.status,successCriteria:u.successCriteria,evidenceIds:[...u.evidenceIds],pauseReason:u.status==='paused'?u.pauseReason:undefined,version:(old?.version??0)+1,createdAt:old?.createdAt??Date.now(),updatedAt:Date.now()};
    next.goals=next.goals.filter(x=>x.id!==u.id);next.goals.push(g);next.revisions.push(structuredClone(g));

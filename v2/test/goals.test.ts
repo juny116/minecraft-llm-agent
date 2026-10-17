@@ -1,3 +1,4 @@
+import {RecoveryMemory} from "../src/recovery.js";
 import test from 'node:test';import assert from 'node:assert/strict';
 import {mkdtempSync,readFileSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {setTimeout as delay} from 'node:timers/promises';
@@ -89,4 +90,52 @@ test('valid reconnect goal review survives an unavailable first step and JEV can
  const r=new Runtime(w,brain,{...opts,actionMs:1000,goals:b},()=>{}) as any;r.lastReady=true;
  await r.refreshPlan();assert.equal(b.needsReview,false);assert.equal(b.snapshot().activeGoal?.id,'food');assert.match(r.planning.plannerFeedback,/Invalid first action/);
  await r.tick();assert.equal(choices,1);assert.equal(r.planning.recentActions.at(-1).decision.action,'look');r.close();
+});
+
+test('terminal reaffirmation preserves original history while applying a new goal',()=>{
+ const file=location(),b=new GoalBook(file),s=new MockWorld().snapshot();let r=b.review(s,null);b.apply(r,[draft(r,'food','completed')],null);
+ const old=b.snapshot().goals[0],saved=JSON.parse(readFileSync(file,'utf8'));r=b.review(s,null);
+ b.apply(r,[{...draft(r,'food','completed'),reason:'Fresh review with a different explanation'},draft(r,'explore')],'explore');
+ assert.deepEqual(b.snapshot().goals.find(g=>g.id==='food'),old);assert.equal(b.snapshot().activeGoal?.id,'explore');
+ const next=JSON.parse(readFileSync(file,'utf8'));assert.equal(next.revisions.length,saved.revisions.length+1);assert.deepEqual(next.revisions[0],saved.revisions[0]);
+ assert.deepEqual(new GoalBook(file).snapshot().goals,JSON.parse(JSON.stringify(b.snapshot().goals)));
+});
+test('terminal mutation rejects the entire transaction and invalid evidence cannot hide in a no-op',()=>{
+ const file=location(),b=new GoalBook(file),s=new MockWorld().snapshot();let r=b.review(s,null);b.apply(r,[draft(r,'food','completed')],null);r=b.review(s,null);
+ const saved=readFileSync(file,'utf8'),before=b.snapshot();
+ for(const change of [{status:'active'},{status:'abandoned'},{description:'Different intention'},{successCriteria:'Different criterion'},{evidenceIds:['invented']}]){
+  assert.throws(()=>b.apply(r,[draft(r,'explore'),{...draft(r,'food','completed'),...change}], 'explore'),/Invalid/);
+  assert.deepEqual(b.snapshot(),before);assert.equal(readFileSync(file,'utf8'),saved);
+ }
+});
+test('abandoned reaffirmation stays abandoned and cannot be selected active',()=>{
+ const b=new GoalBook(),s=new MockWorld().snapshot();let r=b.review(s,null);b.apply(r,[draft(r,'food','abandoned')],null);const old=b.snapshot().goals[0];r=b.review(s,null);
+ assert.throws(()=>b.apply(r,[draft(r,'food','abandoned')],'food'),/active/);
+ b.apply(r,[draft(r,'food','abandoned')],null);assert.deepEqual(b.snapshot().goals[0],old);
+});
+test('independent long loop retains diagnostic feedback for retry and clears it on success',async()=>{
+ const w=new MockWorld(),goals=new GoalBook(),contexts:any[]=[],logs:any[]=[];let calls=0;
+ const brain:Brain={plan:async()=>({goal:'Observe',preferred:'idle'}),choose:async()=>({action:'idle',confidence:1}),reviewGoals:async(_s,c)=>{
+  contexts.push(c);calls++;if(calls===1)throw Error('Invalid terminal goal revision for food; create a new goal');
+  return {goalUpdates:[draft(c.goalReview!)],activeGoalId:'food'};
+ }};
+ const rt:any=new Runtime(w,brain,{...opts,goals,recovery:new RecoveryMemory()},(e,d)=>logs.push({e,d}));const flush=()=>new Promise(r=>setImmediate(r));
+ rt.refreshLong(w.snapshot(),Date.now());await flush();assert.match(rt.planning.longPlannerFeedback,/food/);assert.match(logs.find(x=>x.e==='long_planner_error').d.reason,/terminal/);
+ rt.refreshLong(w.snapshot(),Date.now()+1000);await flush();assert.equal(calls,1);
+ rt.refreshLong(w.snapshot(),Date.now()+31000);await flush();assert.match(contexts[1].longPlannerFeedback,/food/);assert.equal(rt.planning.longPlannerFeedback,undefined);assert.equal(goals.snapshot().activeGoal?.id,'food');rt.close();
+});
+test('long review wire includes scoped feedback and explicit patch contract',async()=>{
+ const w=new MockWorld(),book=new GoalBook(),review=book.review(w.snapshot(),null);
+ const request=(async(_url:any,init:any)=>{const body=JSON.parse(init.body),input=JSON.parse(body.messages.at(-1).content);
+ assert.equal(input.longPlannerFeedback,'Invalid terminal goal revision for food');assert.match(body.messages[0].content,/only new or changed goals/);
+ return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[draft(review)],activeGoalId:'food'})}}],usage:{prompt_tokens:10,completion_tokens:10}});
+ }) as typeof fetch;
+ const b=new ApiBrain({...config(),llmKey:'fake-test-key'},new Budget(2,2),request);
+ await b.reviewGoals(w.snapshot(),{goalReview:review,longPlannerFeedback:'Invalid terminal goal revision for food'} as any,new AbortController().signal);
+});
+test('late long review failure does not contaminate a new operator request',async()=>{
+ const w=new MockWorld(),goals=new GoalBook();let reject!:(e:Error)=>void;
+ const b:Brain={plan:async()=>({goal:'Observe',preferred:'idle'}),choose:async()=>({action:'idle',confidence:1}),reviewGoals:async()=>new Promise((_r,j)=>reject=j)};
+ const rt:any=new Runtime(w,b,{...opts,goals,recovery:new RecoveryMemory()},()=>{});rt.refreshLong(w.snapshot(),Date.now());rt.setGoal('New request');reject(Error('Invalid old review'));
+ await new Promise(r=>setImmediate(r));assert.equal(rt.planning.longPlannerFeedback,undefined);rt.close();
 });
