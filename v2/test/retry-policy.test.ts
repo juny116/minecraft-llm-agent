@@ -66,3 +66,11 @@ test('craft retries ignore unrelated dropped entities and slot reorder but allow
 test('unrelated hand items cannot reset a visibility failure',()=>{
  const r=new RetryPolicy(),s=new MockWorld().snapshot();r.record('mine',p,s,true,'Block not in view');s.equipment=[{slot:'hand',name:'stick'}];r.record('mine',p,s,true,'Block not in view');s.equipment=[{slot:'hand',name:'bread'}];assert.equal(r.blocked('mine',p,s),true);s.position.x+=1;assert.equal(r.blocked('mine',p,s),false);
 });
+
+test('missing table retries depend on a visible table, not wood gains or smaller quantity',()=>{
+ const r=new RetryPolicy(),s=new MockWorld().snapshot(),p:Plan={goal:'tools',preferred:'craft',craft:{item:'wooden_axe',count:2}};
+ s.vision!.blocks=[];r.record('craft',p,s,true,'Missing visible crafting table for wooden_axe');r.record('craft',p,s,true,'Missing visible crafting table for wooden_axe');
+ s.inventory=[{name:'oak_planks',count:20,slot:9}];s.craftable=['stick'];s.position.x+=5;
+ assert.equal(r.blocked('craft',p,s),true);assert.equal(r.blocked('craft',{...p,craft:{item:'wooden_axe',count:1}},s),true);
+ s.vision!.blocks.push({name:'crafting_table',position:{x:1,y:64,z:0},lastSeen:1});assert.equal(r.blocked('craft',p,s),false);
+});

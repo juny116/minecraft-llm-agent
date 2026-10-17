@@ -8,7 +8,7 @@ export const GAME_CONTEXT={version:1,description:'You live in a Minecraft surviv
 export type GoalStatus='active'|'paused'|'completed'|'abandoned';
 export type GoalDraft={id:string;description:string;reason:string;evidenceIds:string[];status:GoalStatus;successCriteria:string;pauseReason?:string};
 export type Goal=GoalDraft&{version:number;createdAt:number;updatedAt:number};
-export type GoalEvidence={id:string;kind:'observation'|'action'|'operator';at:number;data:unknown};
+export type GoalEvidence={id:string;kind:'observation'|'action'|'operator'|'social';at:number;data:unknown};
 export type GoalReview={revision:number;needsReview:boolean;observationId:string;goals:Goal[];evidence:GoalEvidence[]};
 type Data={schema:1;profile:string;revision:number;goals:Goal[];evidence:GoalEvidence[];revisions:Goal[]};
 const text=(v:unknown,max:number)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
@@ -16,7 +16,7 @@ const text=(v:unknown,max:number)=>typeof v==='string'&&v.trim().length>0&&v.len
 export function normalizeGoalUpdates(raw:unknown):unknown{return Array.isArray(raw)?raw.map(g=>g&&typeof g==='object'&&g.status!=='paused'&&g.pauseReason===null?Object.fromEntries(Object.entries(g).filter(([k])=>k!=='pauseReason')):g):raw;}
 export function validateGoalUpdates(raw:unknown):asserts raw is GoalDraft[]{
  if(!Array.isArray(raw)||raw.length>8)throw Error('Invalid goal updates');const ids=new Set();
- for(const g of raw){if(!g||!text(g.id,60)||!/^[a-zA-Z0-9_-]+$/.test(g.id)||ids.has(g.id)||!text(g.description,400)||!text(g.reason,500)||!text(g.successCriteria,400)||!['active','paused','completed','abandoned'].includes(g.status)||!Array.isArray(g.evidenceIds)||g.evidenceIds.length<1||g.evidenceIds.length>8||!g.evidenceIds.every((x:unknown)=>text(x,100))||(g.status==='paused'&&!text(g.pauseReason,400))||(g.pauseReason!==undefined&&!text(g.pauseReason,400)))throw Error('Invalid goal update');ids.add(g.id);}
+ for(const g of raw){if(!g||!text(g.id,60)||!/^[a-zA-Z0-9_-]+$/.test(g.id))throw Error('Invalid goal id: use 1-60 letters, digits, underscore or hyphen; no colon');if(!g||!text(g.id,60)||!/^[a-zA-Z0-9_-]+$/.test(g.id)||ids.has(g.id)||!text(g.description,400)||!text(g.reason,500)||!text(g.successCriteria,400)||!['active','paused','completed','abandoned'].includes(g.status)||!Array.isArray(g.evidenceIds)||g.evidenceIds.length<1||g.evidenceIds.length>8||!g.evidenceIds.every((x:unknown)=>text(x,100))||(g.status==='paused'&&!text(g.pauseReason,400))||(g.pauseReason!==undefined&&!text(g.pauseReason,400)))throw Error('Invalid goal update');ids.add(g.id);}
 }
 export class GoalBook{
  private data:Data;private pending:GoalEvidence[]=[];needsReview=true;
@@ -29,7 +29,7 @@ export class GoalBook{
   if(d.schema!==1||d.profile!==this.profile||!Number.isSafeInteger(d.revision)||d.revision<0||!Array.isArray(d.goals)||d.goals.length>32||!Array.isArray(d.revisions)||d.revisions.length>128||!Array.isArray(d.evidence)||d.evidence.length>1400)throw Error('Invalid goal memory; preserve file');
   for(const g of [...d.goals,...d.revisions]){validateGoalUpdates([g]);if(!Number.isSafeInteger(g.version)||g.version<1||!Number.isFinite(g.createdAt)||!Number.isFinite(g.updatedAt))throw Error('Invalid goal version');}
   if(new Set(d.goals.map(g=>g.id)).size!==d.goals.length||d.goals.filter(g=>g.status==='active').length>1)throw Error('Invalid goal identity');
-  if(d.evidence.some(e=>!e||!text(e.id,100)||!['observation','action','operator'].includes(e.kind)||!Number.isFinite(e.at))||new Set(d.evidence.map(e=>e.id)).size!==d.evidence.length)throw Error('Invalid goal evidence');
+  if(d.evidence.some(e=>!e||!text(e.id,100)||!['observation','action','operator','social'].includes(e.kind)||!Number.isFinite(e.at))||new Set(d.evidence.map(e=>e.id)).size!==d.evidence.length)throw Error('Invalid goal evidence');
   const ids=new Set(d.evidence.map(e=>e.id));if([...d.goals,...d.revisions].some(g=>g.evidenceIds.some(id=>!ids.has(id))))throw Error('Missing goal evidence');return d;
  }
  private persist(next:Data){
@@ -46,18 +46,23 @@ export class GoalBook{
   if(changed){next.revisions=next.revisions.slice(-128);next.revision++;this.persist(next);}
  }
  review(s:Snapshot,userRequest:string|null):GoalReview{
-  const observation=this.evidence('observation',{...compact(s),recovery:s.recovery,dimension:s.dimension,vision:s.vision,nearbyPlayers:s.nearbyPlayers,chatEvents:s.chatEvents});
+  const observation=this.evidence('observation',{...compact(s),recovery:s.recovery,dimension:s.dimension,vision:s.vision,nearbyPlayers:s.nearbyPlayers,chatEvents:s.chatEvents,commitments:s.social?.promises});
   const operator=this.evidence('operator',{request:userRequest});
   // Always include the source facts for existing intentions, plus recent action evidence.
   const referenced=new Set(this.data.goals.flatMap(g=>g.evidenceIds));
-  const all=new Map([...this.data.evidence.filter(e=>referenced.has(e.id)),...this.pending.slice(-16),observation,operator].map(e=>[e.id,e]));
+  // Register only received/self-authored messages supplied by durable social memory.
+  // Their IDs now have explicit provenance; arbitrary chat claims remain unverified.
+  const social:GoalEvidence[]=(s.social?.evidenceMessages??s.social?.heard??[]).map(e=>({id:e.id,kind:'social',at:e.at,data:{source:e.speaker===s.social?.self?'self_statement':'heard_unverified',message:{id:e.id,speaker:e.speaker,text:e.text,at:e.at}}}));
+  const socialIds=new Set(social.map(e=>e.id));
+  const registered=new Set([...this.data.evidence,...this.pending].map(e=>e.id));
+  const all=new Map([...social.filter(e=>!registered.has(e.id)),...this.data.evidence.filter(e=>referenced.has(e.id)||socialIds.has(e.id)),...this.pending.slice(-16),observation,operator].map(e=>[e.id,e]));
   return {revision:this.data.revision,needsReview:this.needsReview,observationId:observation.id,goals:structuredClone(this.data.goals),evidence:structuredClone([...all.values()])};
  }
  apply(review:GoalReview,updates:unknown,activeId:string|null){
   validateGoalUpdates(updates);if(review.revision!==this.data.revision)throw Error('Invalid stale goal review');
   const allowed=new Set(review.evidence.map(e=>e.id)),next=structuredClone(this.data);
   for(const u of updates){
-   if(u.evidenceIds.some(id=>!allowed.has(id)))throw Error('Invalid goal evidence reference');
+   if(u.evidenceIds.some(id=>!allowed.has(id)))throw Error('Invalid goal evidence reference: copy IDs only from goalReview.evidence; cite its current observationId plus registered social evidence, never promise IDs or invented IDs');
    const old=next.goals.find(g=>g.id===u.id);
    if(old&&['completed','abandoned'].includes(old.status)){
     // Reaffirmation is not a revision: keep original evidence, reason and timestamps.

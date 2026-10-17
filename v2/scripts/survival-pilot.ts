@@ -45,7 +45,7 @@ try{
  log('run','started',{runtimeMs});
  while(!reason){
   const states=worlds.map(w=>w.snapshot());if(states.some(s=>s.health<=0||s.lifecycle?.phase==='dead'))respawnSince??=Date.now();else respawnSince=null;
-  reason=creditBlocked?'credit_required':budget.unsettledUsage?'usage_unknown':pilotStopReason({elapsedMs:Date.now()-started,maxMs:runtimeMs,authorizedMaxMs:extended?1800000:300000,states,allowRespawn:true,respawnWaitMs:respawnSince===null?0:Date.now()-respawnSince,budgetExhausted:budget.exhausted,noProgressMs:Math.max(0,Date.now()-lastProgress-Math.max(0,2*c.apiMs-30000)),agentNoProgressMs:runtimes.map(r=>r.executionStatus.progress.noProgressMs),consecutiveFailures:Math.max(0,...failureStreak.values())})??'';
+  reason=creditBlocked?'credit_required':budget.unsettledUsage?'usage_unknown':pilotStopReason({elapsedMs:Date.now()-started,maxMs:runtimeMs,authorizedMaxMs:extended?1800000:300000,states,allowRespawn:true,respawnWaitMs:respawnSince===null?0:Date.now()-respawnSince,budgetExhausted:budget.exhausted,noProgressMs:Math.max(0,Date.now()-lastProgress-Math.max(0,2*c.apiMs-30000)),agentGoalValidationFailures:runtimes.map(r=>r.executionStatus.hasLongGoal?0:r.executionStatus.goalValidationFailures),agentNoProgressMs:runtimes.map(r=>r.executionStatus.progress.noProgressMs),consecutiveFailures:Math.max(0,...failureStreak.values())})??'';
   if(reason)break;
   for(const r of runtimes){const task=r.tick().catch(()=>{reason='runtime_error';});pending.add(task);void task.finally(()=>pending.delete(task));}
   await delay(Math.max(1,Math.min(100,runtimeMs-(Date.now()-started))));

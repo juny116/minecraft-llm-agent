@@ -138,3 +138,10 @@ test('hunger permits an urgent switch TO eating, not an urgent switch AWAY from 
  await r.tick();assert.equal(w.aborts,0);await r.tick();assert.equal(w.aborts,1);assert.equal(r.executionStatus.activeAction,'eat');
  await r.tick();assert.equal(w.aborts,1);assert.equal(r.executionStatus.activeAction,'eat');r.close();await flush();
 });
+
+test('near-complete mining survives repeated ordinary stops but danger still interrupts',async()=>{
+ const w=new SlowWorld();let n=0;const b=brain(async(_s,i)=>decision(++n===1?i.options.find(o=>o.action==='mine')!.id:'stop'));b.reviewGoals=()=>new Promise(()=>{});b.plan=()=>new Promise(()=>{});
+ (w as any).executionProgress=()=>({phase:'digging',phaseElapsedMs:2800,estimatedDigMs:3000,blockBroken:false});
+ const r=new Runtime(w,b,opts,()=>{});primeExecution(r);await r.tick();await r.tick();await r.tick();await r.tick();assert.equal(w.aborts,0);
+ w.state.health=18;await r.tick();assert.equal(w.aborts,1);r.close();await flush();
+});

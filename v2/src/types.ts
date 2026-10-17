@@ -35,7 +35,9 @@ export type Snapshot = {
   messages: string[];
   recipeBook: { initialized: boolean; unlocked: string[] };
 };
+export type MotorProgress={phase:'approach'|'prepare'|'digging'|'collecting';phaseElapsedMs:number;estimatedDigMs?:number;blockBroken:boolean};
 export interface World {
+  executionProgress?():MotorProgress|undefined;
   snapshot(): Snapshot;
   execute(action: Action, signal: AbortSignal, plan?: Plan): Promise<string>;
   stop(): void;

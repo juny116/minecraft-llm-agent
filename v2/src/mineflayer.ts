@@ -123,8 +123,10 @@ export class MineflayerWorld implements World {
     if(result.status==='finished'&&!result.inventoryGained.some(i=>i.name===result.target?.expected&&i.count>0)){result.status='failed';result.detail='No matching inventory gain observed; disappearance is not receipt';}
     return JSON.stringify(result);
   }
+  private motor?:{phase:import('./types.js').MotorProgress['phase'];at:number;estimatedDigMs?:number;blockBroken:boolean};
+  executionProgress():import('./types.js').MotorProgress|undefined{return this.motor?{phase:this.motor.phase,phaseElapsedMs:Math.max(0,Date.now()-this.motor.at),estimatedDigMs:this.motor.estimatedDigMs,blockBroken:this.motor.blockBroken}:undefined;}
   private async mineBlock(signal:AbortSignal,plan?:Plan){
-    const result=miningResult(plan?.mine??null),started=Date.now();
+    const result=miningResult(plan?.mine??null),started=Date.now();this.motor={phase:'approach',at:started,blockBroken:false};
     const totals=()=>{const out:Record<string,number>={};for(const i of this.bot.inventory.items())out[i.name]=(out[i.name]??0)+i.count;return out;};
     const before=totals(),initialIds=new Set(Object.keys(this.bot.entities));
     let digStarted:number|undefined;let digEnded:number|undefined;let target:ReturnType<mineflayer.Bot['blockAt']>;
@@ -155,14 +157,14 @@ export class MineflayerWorld implements World {
         if(!this.bot.canDigBlock(b))throw Error('Block is outside current mining reach; reposition');
         if(!this.blockInSight(b))throw Error('Block is visible only partially; no clear mining face from current position. Reposition or choose another target');
         if(supportsFeet(cell,feet))throw Error('Block supports own feet');return b;};
-      target=fresh();const tool=request.toolSlot!==undefined?this.bot.inventory.items().find(i=>i.slot===request.toolSlot&&(!request.tool||i.name===request.tool)):request.tool?this.bot.inventory.items().find(i=>i.name===request.tool):this.bot.pathfinder.bestHarvestTool(target);
+      this.motor={phase:'prepare',at:Date.now(),blockBroken:false};target=fresh();const tool=request.toolSlot!==undefined?this.bot.inventory.items().find(i=>i.slot===request.toolSlot&&(!request.tool||i.name===request.tool)):request.tool?this.bot.inventory.items().find(i=>i.name===request.tool):this.bot.pathfinder.bestHarvestTool(target);
       if((request.tool||request.toolSlot!==undefined)&&!tool)throw Error('Requested mining tool not carried');
       const original=this.bot.clickWindow;
       this.bot.clickWindow=((...args:Parameters<typeof original>)=>{active.throwIfAborted();return original.apply(this.bot,args);}) as typeof original;
       try{if(tool)await this.bot.equip(tool,'hand');}finally{this.bot.clickWindow=original;}
       active.throwIfAborted();target=fresh();const held=this.bot.heldItem;
       result.tool=held?{name:held.name,enchants:structuredClone(held.enchants??[]),durabilityUsed:held.durabilityUsed}:null;
-      this.bot.on('itemDrop',onDrop);digStarted=Date.now();
+      this.bot.on('itemDrop',onDrop);digStarted=Date.now();const estimate=this.bot.digTime?.(target);this.motor={phase:'digging',at:digStarted,estimatedDigMs:Number.isFinite(estimate)?estimate:undefined,blockBroken:false};
       const clock=new AbortController(),timer=setTimeout(()=>clock.abort(new DOMException('Mining attempt budget exhausted','TimeoutError')),request.maxMs??30000),timeout=clock.signal,digSignal=AbortSignal.any([active,timeout]);
       let stopDig:()=>void=()=>{};
       const interrupted=new Promise<never>((_,reject)=>{stopDig=()=>{this.bot.stopDigging();reject(digSignal.reason);};if(digSignal.aborted)stopDig();else digSignal.addEventListener('abort',stopDig,{once:true});});
@@ -173,7 +175,7 @@ export class MineflayerWorld implements World {
       result.blockBroken=['air','cave_air','void_air'].includes(this.bot.blockAt(vec)?.name??'');
       if(!result.blockBroken)throw Error(result.status==='time_limit'?'Attempt budget exhausted; impossibility not established':'Block break not confirmed');
       this.memory.observe([{name:'air',position:{...cell},lastSeen:Date.now()}]);this.containers=this.containers.filter(c=>!samePosition(c.position,cell));
-      active.throwIfAborted();result.pickup='no_inventory_gain';
+      active.throwIfAborted();result.pickup='no_inventory_gain';this.motor={phase:'collecting',at:Date.now(),blockBroken:true};
       // Bounded post-break observation/pickup; danger or cancellation stops this phase.
       const pickupSignal=AbortSignal.any([active,AbortSignal.timeout(2000)]);
       const stopPickup=()=>this.stop();pickupSignal.addEventListener('abort',stopPickup,{once:true});
@@ -191,7 +193,7 @@ export class MineflayerWorld implements World {
     finally{
       this.bot.removeListener('itemDrop',onDrop);this.bot.removeListener('health',onHealth);active.removeEventListener('abort',abort);
       result.attemptMs=digStarted===undefined?0:(digEnded??Date.now())-digStarted;result.elapsedMs=Date.now()-started;
-      result.inventoryGained=inventoryGains(before,totals());if(result.inventoryGained.length)result.pickup='inventory_gain_observed';
+      result.inventoryGained=inventoryGains(before,totals());if(result.inventoryGained.length)result.pickup='inventory_gain_observed';this.motor=undefined;
     }
     return JSON.stringify(result);
   }

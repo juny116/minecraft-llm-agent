@@ -1,5 +1,5 @@
 import {ProgressTracker} from './progress.js';
-import {executionOptions,executionIdentity,type SupervisorInput} from './supervision.js';
+import {completionBoundary,executionOptions,executionIdentity,type SupervisorInput} from './supervision.js';
 import {RecoveryMemory} from './recovery.js';
 import {reachedCell} from './reach.js';
 import {supportsFeet} from './building.js';
@@ -79,7 +79,7 @@ export class Runtime {
  get planning():PlanningContext {return structuredClone({progress:this.progress.context(Date.now()),...(this.longPlannerFeedback?{longPlannerFeedback:this.longPlannerFeedback}:{}),blockedInteractions:this.retries.context(),observationStreak:this.observationStreak,...(this.plannerFeedback?{plannerFeedback:this.plannerFeedback}:{}),userRequest:this.assignedGoal,...(this.options.goals?{goalState:this.options.goals.snapshot()}:{}),longTermGoal:this.longGoal,mediumTerm:this.medium,replanReasons:[...this.reasons],recentActions:this.journal.recent,olderSummary:this.journal.older,failureStreak:this.failureStreak});}
  setGoal(goal:string|null){
   if(this.closed)return;const next=goal?.trim()||null;if(next===this.assignedGoal)return;
-  this.assignedGoal=next;this.longGeneration++;this.longPlannerFeedback=undefined;this.progress.reset();this.longRequested=true;this.longRetryAt=0;this.supervisorUrgent=true;this.options.goals?.pause('operator request changed; re-evaluate intention');this.longGoal=this.options.goals?null:next;this.medium={summary:'Observe and replan',steps:[],activeStep:0};
+  this.assignedGoal=next;this.longGeneration++;this.longValidationFailures=0;this.longPlannerFeedback=undefined;this.progress.reset();this.longRequested=true;this.longRetryAt=0;this.supervisorUrgent=true;this.options.goals?.pause('operator request changed; re-evaluate intention');this.longGoal=this.options.goals?null:next;this.medium={summary:'Observe and replan',steps:[],activeStep:0};
   this.plan={goal:'Observe and replan',preferred:'idle',userRequest:next};this.planVersion++;this.failureStreak=0;this.failureKey='';this.retryAfter=0;
   this.invalidate('user goal changed');this.log('user_goal',{userGoal:next});
  }
@@ -230,7 +230,7 @@ export class Runtime {
   }
  }
  private lastSelection:{action:Action|'continue';at:number}|null=null;
- get executionStatus(){return {progress:this.progress.context(Date.now()),activeAction:this.activeAction??null,actionPending:this.actionPending,selectorPending:this.decisionPending,mediumPending:this.planPending,longPending:this.longPending,dialoguePending:this.socialPending,reflectionPending:this.reflectionPending,needsGoalReview:this.options.goals?.needsReview??false,hasLongGoal:!!this.longGoal,lastSelection:this.lastSelection?{...this.lastSelection}:null};}
+ get executionStatus(){return {goalValidationFailures:this.longValidationFailures,progress:this.progress.context(Date.now()),activeAction:this.activeAction??null,actionPending:this.actionPending,selectorPending:this.decisionPending,mediumPending:this.planPending,longPending:this.longPending,dialoguePending:this.socialPending,reflectionPending:this.reflectionPending,needsGoalReview:this.options.goals?.needsReview??false,hasLongGoal:!!this.longGoal,lastSelection:this.lastSelection?{...this.lastSelection}:null};}
  private supervisorAt=-Infinity;
  private supervisorUrgent=true;
  private longPending=false;
@@ -239,6 +239,8 @@ export class Runtime {
  private longRetryAt=0;
  private longGeneration=0;
  private pendingSwitch?:{executionId:number;key:string;count:number};
+ private executionIntention:string|null=null;
+ private longValidationFailures=0;
  private executionId=0;
  private executionStarted=0;
  private executionPlan?:Plan;
@@ -251,12 +253,12 @@ export class Runtime {
  private healthBefore=20;
  private newLife(s:Snapshot){
   const dead=s.lifecycle?s.lifecycle.phase==='dead':s.health<=0&&(s.ready||!!this.lastAlive),key=s.lifecycle?String(s.lifecycle.generation):String(s.ready);
-  if(!s.ready&&this.lastReady&&!dead){this.invalidate('disconnected');this.longGeneration++;this.longPlannerFeedback=undefined;this.progress.reset();this.options.goals?.pause('Disconnected; review after reconnect');this.longRequested=true;this.longRetryAt=0;}
+  if(!s.ready&&this.lastReady&&!dead){this.invalidate('disconnected');this.longGeneration++;this.longValidationFailures=0;this.longPlannerFeedback=undefined;this.progress.reset();this.options.goals?.pause('Disconnected; review after reconnect');this.longRequested=true;this.longRetryAt=0;}
   const death=s.lifecycle?.lastDeath;
   if(death&&death.id!==this.lastDeathId){this.lastDeathId=death.id;this.options.recovery!.acceptDeath(death);this.longRequested=true;this.log('death_memory',{deathId:death.id});}
-  if(dead&&!this.previouslyDead){if(!death){const d=this.options.recovery!.death(this.lastAlive??s);this.lastDeathId=d.id;}this.invalidate('death');this.longGeneration++;this.longPlannerFeedback=undefined;this.progress.reset();this.options.goals?.pause('Death; inspect respawn inventory and reconsider recovery');this.longGoal=null;this.longRequested=true;this.longRetryAt=0;this.plan={goal:'Review survival after death',preferred:'idle'};this.medium={summary:'Await respawn observations',steps:[],activeStep:0};this.planVersion++;}
+  if(dead&&!this.previouslyDead){if(!death){const d=this.options.recovery!.death(this.lastAlive??s);this.lastDeathId=d.id;}this.invalidate('death');this.longGeneration++;this.longValidationFailures=0;this.longPlannerFeedback=undefined;this.progress.reset();this.options.goals?.pause('Death; inspect respawn inventory and reconsider recovery');this.longGoal=null;this.longRequested=true;this.longRetryAt=0;this.plan={goal:'Review survival after death',preferred:'idle'};this.medium={summary:'Await respawn observations',steps:[],activeStep:0};this.planVersion++;}
   if(s.ready&&!dead&&(this.previouslyDead||key!==this.lastLifeKey||!this.lastReady)){
-   this.invalidate('spawn or reconnect');this.longGeneration++;this.longPlannerFeedback=undefined;this.progress.reset();this.options.recovery!.respawn(s);this.options.goals?.pause('New life or reconnect: review current inventory and historical death uncertainty');this.longGoal=null;this.longRequested=true;this.longRetryAt=0;this.plan={goal:'Inspect current surroundings while reviewing intentions',preferred:'look'};this.medium={summary:'Review intentions',steps:[],activeStep:0};this.planVersion++;this.supervisorUrgent=true;
+   this.invalidate('spawn or reconnect');this.longGeneration++;this.longValidationFailures=0;this.longPlannerFeedback=undefined;this.progress.reset();this.options.recovery!.respawn(s);this.options.goals?.pause('New life or reconnect: review current inventory and historical death uncertainty');this.longGoal=null;this.longRequested=true;this.longRetryAt=0;this.plan={goal:'Inspect current surroundings while reviewing intentions',preferred:'look'};this.medium={summary:'Review intentions',steps:[],activeStep:0};this.planVersion++;this.supervisorUrgent=true;
   }
   this.previouslyDead=dead;this.lastLifeKey=key;this.lastReady=s.ready;if(s.ready&&!dead)this.lastAlive=structuredClone(s);
  }
@@ -279,9 +281,10 @@ export class Runtime {
    if(p.recoveryDecision){const d=p.recoveryDecision;this.options.recovery!.decide(d.deathId,d.strategy,d.reason);}
    const next=this.options.goals!.snapshot().activeGoal?.description??null;
    if(next!==this.longGoal){this.longGoal=next;this.plan={goal:next??'Observe or wait',preferred:'idle'};this.medium={summary:'Create medium plan under revised intention',steps:[],activeStep:0};this.planVersion++;this.supervisorUrgent=true;}
-   this.longPlannerFeedback=undefined;this.requestPlan('long_goal_reviewed');this.log('goals_reviewed',{goals:this.options.goals!.snapshot(),recovery:p.recoveryDecision});
+   this.longValidationFailures=0;this.longPlannerFeedback=undefined;this.requestPlan('long_goal_reviewed');this.log('goals_reviewed',{goals:this.options.goals!.snapshot(),recovery:p.recoveryDecision});
   }).catch(error=>{if(!this.closed&&generation===this.longGeneration){
    const reason=error instanceof Error&&/^(Invalid |Missing )/.test(error.message)?error.message.slice(0,240):'Long-term review failed';
+   if(reason.startsWith('Invalid ')||reason.startsWith('Missing ')){this.longValidationFailures++;if(this.longValidationFailures>=3)this.log('goal_validation_stalled',{consecutive:this.longValidationFailures,reason});}
    this.longPlannerFeedback=reason;this.longRequested=true;this.longRetryAt=Date.now()+10000;this.log('long_planner_error',{reason});
   }}).finally(()=>{this.longPending=false;});
  }
@@ -342,7 +345,7 @@ export class Runtime {
   const life=this.longGeneration,execId=this.executionId,started=Date.now();
   const options=executionOptions(s,this.plan).filter(o=>!this.retries.blocked(o.action,o.plan,s)&&(o.action!=='look'||now-this.lastLookAt>=2000));
   const inbox=this.options.social?.pendingRouting(now)??[];
-  const input:SupervisorInput={options,execution:this.actionPending?{id:execId,action:this.activeAction!,plan:this.executionPlan!,elapsedMs:Date.now()-this.executionStarted,observedChanges:this.executionObserved?changes(compact(this.executionObserved),compact(s)):undefined,interruptionNote:this.activeAction==='mine'?'Interrupting mining can lose accumulated digging progress':'Switching cancels the current local execution'}:null,inbox,goal:this.longGoal,plan:this.plan,progress,recentOutcome:this.journal.recent.at(-1),recovery:s.recovery};
+  const input:SupervisorInput={options,execution:this.actionPending?{id:execId,action:this.activeAction!,plan:this.executionPlan!,elapsedMs:Date.now()-this.executionStarted,motor:this.world.executionProgress?.(),observedChanges:this.executionObserved?changes(compact(this.executionObserved),compact(s)):undefined,interruptionNote:this.activeAction==='mine'?'Interrupting mining can lose accumulated digging progress':'Switching cancels the current local execution'}:null,inbox,goal:this.longGoal,plan:this.plan,progress,recentOutcome:this.journal.recent.at(-1),recovery:s.recovery};
   try{
    const d=await this.brain.supervise!(s,input,this.lifetime.signal);
    if(this.closed||life!==this.longGeneration)return;
@@ -358,6 +361,7 @@ export class Runtime {
    if(this.actionPending&&this.activeAction===selected.action&&executionIdentity(this.activeAction!,this.executionPlan!)===executionIdentity(selected.action,selected.plan)){this.pendingSwitch=undefined;return;}
    if(this.actionPending&&!['idle','look'].includes(this.activeAction!)){
     const urgent=!!fresh.enemies?.length||fresh.health<(this.executionObserved?.health??fresh.health)||selected.action==='eat'&&fresh.food<14&&fresh.canEat;
+    if(!urgent&&this.longGoal===this.executionIntention&&completionBoundary(this.world.executionProgress?.())){this.pendingSwitch=undefined;this.log('switch_deferred_completion',{from:this.activeAction,to:selected.action,motor:this.world.executionProgress?.()});return;}
     const key=executionIdentity(selected.action,selected.plan),old=this.pendingSwitch;
     const count=old?.executionId===execId&&old.key===key?old.count+1:1;
     this.pendingSwitch={executionId:execId,key,count};
@@ -367,7 +371,7 @@ export class Runtime {
    if(this.actionPending){this.log('execution_switch',{from:this.activeAction,to:selected.action,choice:d.choice,elapsedMs:Date.now()-this.executionStarted,fromIdentity:executionIdentity(this.activeAction!,this.executionPlan!),toIdentity:executionIdentity(selected.action,selected.plan)});this.actionController?.abort();this.world.stop();await this.executionTask;}
    if(this.closed||life!==this.longGeneration||!candidates(this.world.snapshot(),selected.plan).includes(selected.action))return;
    this.lastSelection={action:selected.action,at:Date.now()};this.log('decision',{action:selected.action,confidence:d.confidence,control:'start_or_switch'});
-   this.executionId++;this.executionStarted=Date.now();this.executionPlan=structuredClone(selected.plan);this.executionObserved=structuredClone(fresh);
+   this.executionId++;this.executionIntention=this.longGoal;this.executionStarted=Date.now();this.executionPlan=structuredClone(selected.plan);this.executionObserved=structuredClone(fresh);
    this.executionTask=this.run({action:selected.action,confidence:d.confidence},options.map(o=>o.action),'selector',fresh,selected.plan);
    void this.executionTask.catch(()=>this.log('execution_error'));
   }catch{if(!this.closed)this.log('decision_error');}finally{this.decisionPending=false;}
