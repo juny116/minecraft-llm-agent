@@ -73,3 +73,5 @@ runs 전체는 비공개입니다. 자율 목표는 `goals.json`에 저장하고
 `scripts/`의 하네스는 정해진 재료·위치·상태를 요구하는 fixture입니다. 일반 플레이는 start로 실행합니다. 각 스크립트를 읽고 봇 중복 접속을 피하며 `--live-functional`로 명시적으로 시작하세요. API 검증은 별도 비용 범위를 정합니다. 본실험은 별도 승인·설계 없이 시작하지 않습니다.
 
 [현재 범위](docs/READINESS.md) · [명세](docs/SPEC.md) · [인수인계](docs/HANDOFF.md)
+
+다음 TODO: [관측 기반 JEV 대상 선택](docs/TARGET_SELECTION.md). 작은 API 검증은 완료했으나 기본 런타임은 기존 후보 정책을 유지한다. 후보 범위 확대와 자기보호 우선순위를 검증한 뒤 실제 서버 비교가 필요하다.
