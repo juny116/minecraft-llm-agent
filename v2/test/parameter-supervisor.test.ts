@@ -93,16 +93,17 @@ test('explicit live contract binds low-confidence values without mandatory execu
 });
 
 test('runtime provider separates withdrawal while preserving coordinated review and selected destination',async()=>{
- for(const withdraw of [false,true]){
+ for(const mode of ['separate','proposal'] as const)for(const withdraw of [false,true]){
   const calls:string[][]=[];
-  const brain=new ApiBrain({...config(),mode:'jev',jevKey:'test-only-jev',argumentContract:'coordinated',withdrawalMode:'separate'},new Budget(20,2),(async(_url:any,init:any)=>{
+  const brain=new ApiBrain({...config(),mode:'jev',jevKey:'test-only-jev',argumentContract:'coordinated',withdrawalMode:mode},new Budget(20,2),(async(_url:any,init:any)=>{
    const body=JSON.parse(init.body),keys=Object.keys(body.questions);calls.push(keys);
+   const sent=decodeJevState(body.state);assert.ok(sent.lookFeedback);assert.ok(sent.movementEvidence);assert.match(sent.moveSemantics,/radius 2/);assert.deepEqual(sent.lookFeedback.recentLooks.map((r:any)=>r.id),[42]);
    return Response.json({answers:Object.fromEntries(keys.map(k=>[k,{type:'choice',confidence:.01,choice:k==='action'?'move':k==='review'?'none':k==='bindingDecision'?(withdraw?'withdraw':'bind'):Object.keys(body.questions[k].criteria).find(v=>v.startsWith('value_'))}])),usage:{input_tokens:100,output_tokens:0}});
   }) as typeof fetch);
   const state=fixture();state.vision!.blocks=[];state.places=[];
-  const d=await brain.supervise(state,input,new AbortController().signal);
-  assert.equal(d.review,'none');assert.equal(calls[1][0],'bindingDecision');
-  if(withdraw){assert.equal(d.choice,'unresolved');assert.equal(d.selected,undefined);assert.equal(calls.length,2);}
+  const d=await brain.supervise(state,{...input,recentLookResults:[{id:42,outcome:'succeeded',view:{camera:{yawDeltaDegrees:0,pitchDeltaDegrees:0}}}]},new AbortController().signal);
+  assert.equal(d.review,'none');assert.equal(calls[mode==='proposal'?2:1][0],'bindingDecision');
+  if(withdraw){assert.equal(d.choice,'unresolved');assert.equal(d.selected,undefined);assert.equal(calls.length,mode==='proposal'?3:2);}
   else {assert.equal(d.selected?.action,'move');assert.deepEqual(d.selected?.plan.destination,{x:5,y:64,z:0});assert.equal(calls.length,3);}
  }
 });
