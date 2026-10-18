@@ -30,7 +30,7 @@ test('actual JEV receives all selected places but not raw annotation evidence',a
 test('medium LLM receives place evidence and returns annotation patches without mandatory places',async()=>{
  const {s,ev}=evidence();s.placeEvidence=ev;s.importantPlaces=[];
  const b=new ApiBrain({...config(),targetPolicy:'observed',mode:'jev',jevKey:'test',llmKey:'test'},new Budget(1,1),(async(_url:any,init:any)=>{
-  const body=JSON.parse(init.body);assert.match(body.messages[0].content,/You decide importance/);const input=JSON.parse(body.messages.at(-1).content);assert.equal(input.memory.placeEvidence.length,20);
+  const body=JSON.parse(init.body);assert.match(body.messages[0].content,/You decide importance/);const input=JSON.parse(body.messages.at(-1).content);assert.equal(input.memory.placeEvidence.length,20);assert.deepEqual(input.placeCitationContract.allowedEvidenceIds,ev.map(e=>e.id));
   return Response.json({choices:[{message:{content:JSON.stringify({goal:'Explore',intent:{description:'Learn surroundings',desiredInventory:[],constraints:[]},proposals:[],placeUpdates:[{evidenceId:ev[0].id,label:'Meeting point',reason:'Useful for cooperation'}]})}}],usage:{prompt_tokens:1,completion_tokens:1}});
  }) as typeof fetch);
  const p=await b.plan(s,[],new AbortController().signal,null,{longTermGoal:'Explore'} as any);assert.equal(p.placeUpdates?.[0].evidenceId,ev[0].id);
@@ -41,5 +41,56 @@ test('runtime applies accepted medium annotations and feeds the complete map to 
  const w=new MockWorld();w.state.dimension='overworld';const m=new ImportantPlaces();(w as any).importantPlaces=m;
  const r=new Runtime(w,{choose:new MockBrain().choose,supervise:async()=>({choice:'wait',confidence:1,review:'none',routes:{}}),plan:async(s)=>({goal:'Explore',preferred:'look',intent:{description:'Explore',desiredInventory:[],constraints:[]},placeUpdates:[{evidenceId:s.placeEvidence![0].id,label:'Return point',reason:'Useful landmark'}]})},{planMs:30000,actionMs:1000,minConfidence:0},()=>{});
  const x=r as any;x.longGoal='Explore';x.options.goals=undefined;x.refreshMedium(x.observation(),Date.now());await delay(0);
- assert.equal(m.snapshot().length,1);assert.equal(x.observation().importantPlaces.length,1);assert.equal(r.plan.placeUpdates,undefined);r.close();
+ assert.equal(m.snapshot().length,1);assert.equal(x.observation().importantPlaces.length,1);assert.equal(r.plan.placeUpdates,undefined);assert.equal(r.planning.placeMemoryReview?.recent.at(-1)?.status,'applied');r.close();
+});
+
+
+test('annotation receipts distinguish changed, unchanged and rejected batches and survive reconnect',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'place-receipt-'));
+ try{const file=join(dir,'map.json'),{ev}=evidence(),m=new ImportantPlaces(file,'test');
+ const patch={evidenceId:ev[0].id,label:'Landmark',reason:'Orientation'};
+ assert.equal(m.apply([patch],ev)?.status,'applied');
+ assert.equal(m.apply([patch],ev)?.status,'unchanged');
+ const before=m.snapshot();
+ assert.throws(()=>m.apply([{...patch,label:'Changed'},{...patch,evidenceId:'invented'}],ev),/Invalid place evidence/);
+ assert.deepEqual(m.snapshot(),before);
+ const restored=new ImportantPlaces(file,'test');assert.deepEqual(restored.review().recent.map(x=>x.status),['applied','unchanged','rejected']);
+ assert.equal(restored.review().recent.at(-1)?.updates.length,0);
+ restored.apply(undefined,ev);restored.apply([],ev);assert.equal(restored.review().recent.length,3);
+ for(let i=0;i<12;i++)restored.apply([patch],ev);
+ assert.equal(restored.review().recent.length,8);assert.equal(restored.snapshot().length,1);
+ const copy=restored.review();copy.recent[0].updates[0].placeId='mutated';assert.notEqual(restored.review().recent[0].updates[0].placeId,'mutated');
+ }finally{rmSync(dir,{recursive:true,force:true});}
+});
+
+import {selectorContext} from '../src/selector-context.js';
+import {planningInput} from '../src/planning-input.js';
+test('successful bookkeeping is supplied to JEV and medium planner without automatically completing a goal',()=>{
+ const {s,ev}=evidence(),m=new ImportantPlaces();m.apply([{evidenceId:ev[0].id,label:'Ore',reason:'Observed seam; access unknown'}],ev);
+ const review=m.review();const input:any={execution:null,options:[],inbox:[],goal:'Explore',placeMemoryReview:review};
+ assert.deepEqual(selectorContext(s,input,{}).placeMemoryReview,review);
+ const planned=planningInput({placeMemoryReview:review,longTermGoal:'Explore',recentActions:[]} as any);
+ assert.deepEqual(planned?.placeMemoryReview,review);assert.equal(planned?.longTermGoal,'Explore');
+ assert.equal(planned?.goalState,undefined);
+});
+
+test('rejected annotations expose feedback while preserving the prior runtime plan',async()=>{
+ const w=new MockWorld();w.state.dimension='overworld';const m=new ImportantPlaces();(w as any).importantPlaces=m;
+ const r=new Runtime(w,{choose:new MockBrain().choose,supervise:async()=>({choice:'wait',confidence:1,review:'none',routes:{}}),plan:async()=>({goal:'Should not apply',preferred:'look',placeUpdates:[{evidenceId:'invented',label:'Fake',reason:'Unknown'}]})},{planMs:30000,actionMs:1000,minConfidence:0},()=>{});
+ const x=r as any;x.longGoal='Explore';x.options.goals=undefined;const old=r.plan.goal;
+ x.refreshMedium(x.observation(),Date.now());await delay(0);
+ assert.equal(r.plan.goal,old);assert.equal(m.snapshot().length,0);assert.equal(r.planning.placeMemoryReview?.recent.at(-1)?.status,'rejected');
+ assert.match(r.planning.plannerFeedback!,/Invalid place evidence/);r.close();
+});
+
+
+test('long planner receives memory receipts as evidence of bookkeeping, not a fabricated goal completion',async()=>{
+ const {s,ev}=evidence(),m=new ImportantPlaces();m.apply([{evidenceId:ev[0].id,label:'Landmark',reason:'Orientation'}],ev);
+ const review=m.review();s.importantPlaces=m.snapshot();
+ const b=new ApiBrain({...config(),targetPolicy:'observed',mode:'jev',llmKey:'test'},new Budget(1,1),(async(_url:any,init:any)=>{
+  const body=JSON.parse(init.body),input=JSON.parse(body.messages.at(-1).content);
+  assert.deepEqual(input.placeMemoryReview,review);assert.match(body.messages[0].content,/does not prove a safe route/);
+  return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[],activeGoalId:null})}}],usage:{prompt_tokens:1,completion_tokens:1}});
+ }) as typeof fetch);
+ await b.reviewGoals(s,{placeMemoryReview:review,recentActions:[],goalReview:{observationId:'obs',evidence:[]},olderSummary:{},longTermGoal:'Explore'} as any,new AbortController().signal);
 });
