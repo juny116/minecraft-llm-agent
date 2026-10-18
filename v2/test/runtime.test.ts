@@ -56,3 +56,22 @@ test('close prevents a pending planner from sending chat', async () => {
 
 test('new conversation discards a pending choice without treating it as an executed action',async()=>{let finish!:(d:{action:'idle';confidence:number})=>void;const w=new MockWorld();const events:string[]=[];const brain:Brain={plan:async()=>({goal:'wait',preferred:'idle'}),choose:()=>new Promise(resolve=>{finish=resolve;})};const r=new Runtime(w,brain,options,e=>events.push(e));const pending=r.tick();await flush();w.state.messages=['Alice: wait, I am using the chest'];await r.tick();finish({action:'idle',confidence:1});await pending;assert.ok(events.includes('decision_discarded'));assert.ok(!r.planning.recentActions.some(a=>a.outcome==='succeeded'));r.close();});
 test('unchanged idle state reuses short wait without another selector call; new chat wakes it',async()=>{let choices=0;const w=new MockWorld(),r=new Runtime(w,{plan:async()=>({goal:'wait',preferred:'idle',steps:[]}),choose:async()=>{choices++;return {action:'idle',confidence:1};}},options,()=>{});await r.tick();await flush();await r.tick();const before=choices;await r.tick();assert.equal(choices,before);w.state.messages=['Alice: crafted the items'];await r.tick();assert.ok(choices>before);r.close();});
+
+test('medium planner distinguishes running execution from completed history', async () => {
+ const world=new MockWorld();let finish!: (s:string)=>void;
+ world.execute=()=>new Promise<string>(resolve=>{finish=resolve;});
+ const brain:Brain={parameterSelection:true,choose:new MockBrain().choose,plan:()=>new Promise(()=>{}),supervise:async()=>({choice:'selected',confidence:1,review:'none',routes:{},selected:{id:'selected',action:'look',plan:{goal:'Observe',preferred:'look',modelSelected:true,look:{yaw:1,pitch:0}}}})};
+ const r=new Runtime(world,brain,options,()=>{});
+ try {
+  assert.equal(Boolean(r.planning.activeExecution),false);
+  await r.tick();await flush();
+  const snapshot=r.planning;
+  assert.equal(snapshot.activeExecution?.action,'look');
+  assert.equal(snapshot.recentActions.length,0);
+  snapshot.activeExecution!.plan.goal='modified copy';
+  assert.notEqual(r.planning.activeExecution?.plan.goal,'modified copy');
+  finish('Completed action');await flush();
+  assert.equal(Boolean(r.planning.activeExecution),false);
+  assert.equal(r.planning.recentActions.length,1);
+ } finally {r.close();}
+});
