@@ -1,3 +1,4 @@
+import {ImportantPlaces} from './important-places.js';
 import {reachedCell} from './reach.js';
 import {localNavigationTargets} from './navigation.js';
 import {tableSupportMaterial} from './building.js';
@@ -29,6 +30,7 @@ const { pathfinder, goals } = pathfinderPackage;
 function samePosition(a:{x:number;y:number;z:number},b:{x:number;y:number;z:number}){return a.x===b.x&&a.y===b.y&&a.z===b.z;}
 export class MineflayerWorld implements World {
   private spatial?:SpatialMemory;
+ readonly importantPlaces:ImportantPlaces;
   private lastAlivePossessions?:import('./recovery.js').AlivePossessions;
   private recovery:RecoveryMemory;private generation=0;private deathCount=0;private dead=false;
   private bot: mineflayer.Bot;
@@ -57,7 +59,7 @@ export class MineflayerWorld implements World {
   private messages: string[] = [];
   private chatEvents:import('./social.js').ChatEvent[]=[];
   constructor(name: string, private c: Config, log: Log) {
-    const location=botMemoryLocation('--live',name,c);this.spatial=new SpatialMemory(join(location.dir,'spatial.json'),location.profile);this.recovery=new RecoveryMemory(join(location.dir,'recovery.json'));
+    const location=botMemoryLocation('--live',name,c);this.importantPlaces=new ImportantPlaces(join(location.dir,'important-places.json'),location.profile);this.spatial=new SpatialMemory(join(location.dir,'spatial.json'),location.profile);this.recovery=new RecoveryMemory(join(location.dir,'recovery.json'));
     this.bot = mineflayer.createBot({ host: c.host, port: c.port, version: c.version,
       customPackets: protocolOverrides(c.version),
       username: name, auth: c.auth, respawn:true, profilesFolder: './runs/auth' });

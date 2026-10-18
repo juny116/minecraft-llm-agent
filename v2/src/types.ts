@@ -4,9 +4,11 @@ import {compatible} from './equipment.js';
 export type Action = 'idle' | 'mine' | 'deposit' | 'eat' | 'follow' | 'move' | 'craft' | 'look' | 'attack' | 'flee' | 'place_table' | 'inspect_container' | 'withdraw' | 'give' | 'place_block' | 'pickup' | 'equip';
 export type Interaction = {equip?:import('./equipment.js').EquipRequest;pickup?:import('./pickup.js').PickupRequest;build?:import('./building.js').BuildRequest;mine?:import('./building.js').DigRequest;container?: {x:number;y:number;z:number}; transfer?: {item:string;count:number;recipient?:string;slot?:'input'|'fuel'|'output'}};
 export type WorkIntent={description:string;desiredInventory:{item:string;count:number}[];constraints:string[]};
-export type Plan = Interaction & {intent?:WorkIntent;proposals?:Plan[]; userRequest?:string|null; goalUpdates?:import('./goals.js').GoalDraft[]; activeGoalId?:string|null; speech?:import('./social.js').Speech; activeStepId?: string; longTermGoal?: string; goalRevisionReason?: string; steps?: import('./planning.js').Step[]; goal: string; preferred: Action; say?: string; destination?: { x: number; y: number; z: number }; craft?: { item: string; count: number }; look?: { yaw: number; pitch: number } };
+export type Plan = Interaction & {placeUpdates?:import('./important-places.js').PlaceUpdate[];intent?:WorkIntent;proposals?:Plan[]; userRequest?:string|null; goalUpdates?:import('./goals.js').GoalDraft[]; activeGoalId?:string|null; speech?:import('./social.js').Speech; activeStepId?: string; longTermGoal?: string; goalRevisionReason?: string; steps?: import('./planning.js').Step[]; goal: string; preferred: Action; say?: string; destination?: { x: number; y: number; z: number }; craft?: { item: string; count: number }; look?: { yaw: number; pitch: number } };
 export type DecisionPlan = Omit<Plan,'preferred'> & {preferred?:Action;recentOutcome?:{action:Action;outcome:import('./planning.js').Outcome;result:string;changes:ReturnType<typeof import('./planning.js').changes>}};
 export type Snapshot = {
+  importantPlaces?:import('./important-places.js').ImportantPlace[];
+  placeEvidence?:import('./important-places.js').PlaceEvidence[];
   // Motor validation only; never sent to model prompts.
   observedDestinationKeys?: string[];
   navigationTargets?: {x:number;y:number;z:number}[];
@@ -38,6 +40,7 @@ export type Snapshot = {
 };
 export type MotorProgress={phase:'approach'|'prepare'|'digging'|'collecting';phaseElapsedMs:number;estimatedDigMs?:number;blockBroken:boolean};
 export interface World {
+ importantPlaces?:import('./important-places.js').ImportantPlaces;
   executionProgress?():MotorProgress|undefined;
   snapshot(): Snapshot;
   execute(action: Action, signal: AbortSignal, plan?: Plan): Promise<string>;

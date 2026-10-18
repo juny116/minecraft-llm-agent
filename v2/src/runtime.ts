@@ -1,3 +1,4 @@
+import {ImportantPlaces,placeEvidence} from './important-places.js';
 import {intentSatisfied} from './work-intent.js';
 import {ProgressTracker} from './progress.js';
 import {completionBoundary,executionOptions,executionIdentity,type SupervisorInput} from './supervision.js';
@@ -14,6 +15,7 @@ import { candidates, hasMiningTool, type Action, type Brain, type Decision, type
 import {Journal,compact,changes,classify,completed,type PlanningContext,type Outcome} from './planning.js';
 export type RuntimeOptions = { selectorMs?:number;longPlanMs?:number;reflectionMs?:number;socialMs?:number;decisionTtlMs?:number;recovery?:RecoveryMemory; planMs: number; actionMs: number; minConfidence: number; selectorKind?: string; memory?:ExperienceMemory; social?:SocialMemory; reflectionEnabled?:boolean; goals?:GoalBook };
 export class Runtime {
+ private importantPlaces:ImportantPlaces;
  plan:Plan={goal:'Observe before acting',preferred:'idle'};
  history:string[]=[];
  private assignedGoal:string|null=null;
@@ -56,8 +58,8 @@ export class Runtime {
  private lastIdle?:{key:string;at:number};
  private lifetime=new AbortController();
  private actionController?:AbortController;
- constructor(readonly world:World,private brain:Brain,private options:RuntimeOptions,private log:Log){if(brain.supervise){options.goals??=new GoalBook();options.recovery??=new RecoveryMemory();}}
- private observation(){const s=this.world.snapshot();if(this.options.recovery)s.recovery=this.options.recovery.context();if(this.options.memory)s.memoryGuidance=this.options.memory.retrieve(s,[this.activeAction,this.plan.preferred,...(this.plan.intent?['mine','move','craft'] as Action[]:[])].filter((x):x is Action=>!!x));if(this.options.social){this.options.social.ingest(s.chatEvents??[]);s.social=this.options.social.context();}return s;}
+ constructor(readonly world:World,private brain:Brain,private options:RuntimeOptions,private log:Log){this.importantPlaces=world.importantPlaces??new ImportantPlaces();if(brain.supervise){options.goals??=new GoalBook();options.recovery??=new RecoveryMemory();}}
+ private observation(){const s=this.world.snapshot();this.importantPlaces.observe(s);s.importantPlaces=this.importantPlaces.snapshot();s.placeEvidence=placeEvidence(s);if(this.options.recovery)s.recovery=this.options.recovery.context();if(this.options.memory)s.memoryGuidance=this.options.memory.retrieve(s,[this.activeAction,this.plan.preferred,...(this.plan.intent?['mine','move','craft'] as Action[]:[])].filter((x):x is Action=>!!x));if(this.options.social){this.options.social.ingest(s.chatEvents??[]);s.social=this.options.social.context();}return s;}
  private async converse(s:Snapshot,now:number){
   const social=this.options.social;if(!social||!this.brain.communicate||this.socialPending||this.closed||now-this.lastSocial<8000||s.enemies?.length||!s.ready)return;
   const context=s.social??social.context();
@@ -322,6 +324,8 @@ export class Runtime {
     if(exhausted){this.planVersion++;this.activateStep();this.supervisorUrgent=true;this.reasons.delete('medium_plan_completed');}
     this.plannerFeedback=undefined;this.log('plan_prefetched',{added:additions.length,remaining:this.medium.steps.length,exhausted});return;
    }
+   this.importantPlaces.observe(this.world.snapshot());
+   this.importantPlaces.apply(p.placeUpdates,s.placeEvidence??[]);delete p.placeUpdates;
    // Only replace intentions. An ongoing executor retains its immutable plan until JEV changes it.
    this.mediumChain++;this.prefetchAttemptedTail=undefined;
    this.plan={...p,longTermGoal:this.longGoal??undefined};delete this.plan.goalUpdates;delete this.plan.activeGoalId;
@@ -407,5 +411,5 @@ export class Runtime {
    void this.executionTask.catch(()=>this.log('execution_error'));
   }catch{if(!this.closed)this.log('decision_error');}finally{this.decisionPending=false;}
  }
- close(drainModels=false){this.closed=true;this.epoch++;if(!drainModels)this.lifetime.abort();this.actionController?.abort();this.world.stop();this.world.close();}
+ close(drainModels=false){this.importantPlaces.flush(true);this.closed=true;this.epoch++;if(!drainModels)this.lifetime.abort();this.actionController?.abort();this.world.stop();this.world.close();}
 }
