@@ -7,7 +7,7 @@ import {parsePlan,ApiBrain,Budget} from '../src/providers.js';
 import {config} from '../src/config.js';
 import {MockWorld} from '../src/mock.js';
 import {executionOptions} from '../src/supervision.js';
-import {intentSatisfied} from '../src/work-intent.js';
+import {intentSatisfied,parseIntent} from '../src/work-intent.js';
 import {ExperienceMemory,followupWindows,type Episode} from '../src/experience-memory.js';
 import {compact,changes,type ActionRecord} from '../src/planning.js';
 import {Runtime} from '../src/runtime.js';
@@ -82,4 +82,10 @@ test('snapshot before login does not access unavailable inventory for food',asyn
  const w=Object.create(MineflayerWorld.prototype) as any;
  Object.assign(w,{ready:false,bot:{},observe:()=>{},knownPlaces:()=>[],navigationTargets:()=>[],containers:[],incomingDamage:{snapshot:()=>[]},combatEvidence:{snapshot:()=>[]},enemies:()=>[],encounters:[],visible:[],recovery:{context:()=>({deaths:[]})},chatEvents:[],messages:[],recipeBook:{snapshot:()=>({initialized:false,unlocked:[]})}});
  assert.equal(w.snapshot().foodAvailable,false);assert.equal(w.snapshot().canEat,false);
+});
+
+test('work instructions retain up to 500 characters without silently clipping evidence',()=>{
+ const text='x'.repeat(500), raw={goal:'task',intent:{description:'x'.repeat(400),desiredInventory:[],constraints:[text]},proposals:[]};
+ assert.equal(parseIntent(raw,parsePlan).intent!.constraints[0],text);
+ assert.throws(()=>parseIntent({...raw,intent:{...raw.intent,constraints:[text+'x']}},parsePlan),/Invalid/);
 });

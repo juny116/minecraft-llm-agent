@@ -9,3 +9,12 @@ test('one agents progress cannot mask another agents prolonged stall',()=>{
  const state={elapsedMs:100000,maxMs:300000,states:[{ready:true,health:20},{ready:true,health:20}],budgetExhausted:false,noProgressMs:0,consecutiveFailures:0,agentNoProgressMs:[0,180000]};
  assert.equal(pilotStopReason(state),'agent_no_progress');assert.equal(pilotStopReason({...state,agentNoProgressMs:[0,90000]}),null);
 });
+
+test('explicit stall observation retains time and health stops without forcing behavior',()=>{
+ const s={elapsedMs:1000,maxMs:300000,states:[{ready:true,health:20}],budgetExhausted:false,noProgressMs:200000,consecutiveFailures:10,agentNoProgressMs:[200000]};
+ assert.equal(pilotStopReason(s),'repeated_failure');
+ assert.equal(pilotStopReason({...s,observeStalls:true}),null);
+ assert.equal(pilotStopReason({...s,observeStalls:true,elapsedMs:300000}),'time_limit');
+ assert.equal(pilotStopReason({...s,observeStalls:true,budgetExhausted:true}),'budget_or_usage_limit');
+ assert.equal(pilotStopReason({...s,observeStalls:true,states:[{ready:true,health:5}]}),'low_health');
+});

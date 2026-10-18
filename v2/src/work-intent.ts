@@ -10,7 +10,7 @@ export function parseIntent(raw:any,parseProposal:(raw:unknown)=>Plan):Plan{
  }
  if(typeof raw?.goal!=='string'||!raw.goal.trim()||raw.goal.length>400||!i||typeof i.description!=='string'||!i.description.trim()||i.description.length>400
  ||!Array.isArray(i.desiredInventory)||i.desiredInventory.length>8||i.desiredInventory.some((t:any)=>!t||!/^[a-z0-9_]+$/.test(t.item)||!Number.isInteger(t.count)||t.count<1||t.count>2304)
- ||!Array.isArray(i.constraints)||i.constraints.length>6||i.constraints.some((x:any)=>typeof x!=='string'||!x.trim()||x.length>200))throw Error('Invalid work intent: description, desiredInventory [{item,count}], constraints [text]');
+ ||!Array.isArray(i.constraints)||i.constraints.length>6||i.constraints.some((x:any)=>typeof x!=='string'||!x.trim()||x.length>500))throw Error('Invalid work intent: description, desiredInventory [{item,count}], constraints [text]');
  if(raw.steps?.length||raw.mine||raw.destination)throw Error('Invalid intent: JEV chooses mine/move targets, not planner steps');
  if(raw.proposals!==undefined&&(!Array.isArray(raw.proposals)||raw.proposals.length>6))throw Error('Invalid intent proposals');
  const proposals=(raw.proposals??[]).map((p:any)=>{

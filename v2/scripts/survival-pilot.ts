@@ -13,6 +13,8 @@ import {pilotStopReason} from '../src/pilot.js';
 if(!process.argv.includes('--live-functional')||!process.argv.includes('--with-api'))throw Error('Explicit live/API functional flags required');
 process.env.MEMORY_NAMESPACE??='survival-pilot-v1';
 const extended=process.argv.includes('--extended-functional');
+const observeStalls=process.argv.includes('--observe-stalls');
+if(observeStalls&&!extended)throw Error('Stall observation needs explicit extended functional mode');
 const authorizedTotal=Number(process.argv.find(a=>a.startsWith('--authorized-total-usd='))?.split('=')[1]??5);
 const source=(()=>{try{return {revision:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),dirty:!!execFileSync('git',['status','--porcelain'],{encoding:'utf8'}).trim()};}catch{return {revision:null,dirty:null};}})();
 const c={...config(),mode:'jev' as const};if(c.names.length!==2)throw Error('Pilot needs exactly two bot names');
@@ -35,7 +37,7 @@ const log=(bot:string,event:string,data:Record<string,unknown>={})=>{
 budget.onDiagnostic=data=>log('api','api_request',data);
 const interrupt=()=>{reason='operator_stop';};process.once('SIGINT',interrupt);process.once('SIGTERM',interrupt);
 try{
- writeFileSync(join(dir,'config.json'),JSON.stringify({source,mode:'live-functional',targetPolicy:c.targetPolicy,argumentContract:c.argumentContract,withdrawalMode:c.withdrawalMode,agentTrack:'A',goalInterface:'evidence-goals-v1',names:c.names,llmModel:c.llmModel,jevModel:c.jevModel,runtimeMs,maxCalls:budget.maxCalls,maxRunUsd:budget.maxUsd}),{mode:0o600});
+ writeFileSync(join(dir,'config.json'),JSON.stringify({source,mode:'live-functional',targetPolicy:c.targetPolicy,argumentContract:c.argumentContract,withdrawalMode:c.withdrawalMode,observeStalls,agentTrack:'A',goalInterface:'evidence-goals-v1',names:c.names,llmModel:c.llmModel,jevModel:c.jevModel,runtimeMs,maxCalls:budget.maxCalls,maxRunUsd:budget.maxUsd}),{mode:0o600});
  for(const name of c.names){const w=new MineflayerWorld(name,c,(e,f)=>log(name,e,f));worlds.push(w);const location=botMemoryLocation('--live',name,c);runtimes.push(new Runtime(w,brain,{selectorMs:c.tickMs,longPlanMs:c.longPlanMs,reflectionMs:c.reflectionMs,socialMs:c.socialMs,recovery:new RecoveryMemory(join(location.dir,'recovery.json')),planMs:c.planMs,actionMs:c.actionMs,minConfidence:c.minConfidence,selectorKind:'jev',goals:new GoalBook(join(location.dir,'goals.json'),location.profile),memory:openBotMemory('--live',name,c),social:new SocialMemory(name,join(location.dir,'social.json'))},(e,f)=>log(name,e,f)));}
  const connecting=Date.now();while(!reason&&!worlds.every(w=>w.snapshot().ready)&&Date.now()-connecting<20000)await delay(100);
  if(!worlds.every(w=>w.snapshot().ready))reason||='spawn_timeout';
@@ -46,7 +48,7 @@ try{
  log('run','started',{runtimeMs});
  while(!reason){
   const states=worlds.map(w=>w.snapshot());if(states.some(s=>s.health<=0||s.lifecycle?.phase==='dead'))respawnSince??=Date.now();else respawnSince=null;
-  reason=creditBlocked?'credit_required':budget.unsettledUsage?'usage_unknown':pilotStopReason({elapsedMs:Date.now()-started,maxMs:runtimeMs,authorizedMaxMs:extended?1800000:300000,states,allowRespawn:true,respawnWaitMs:respawnSince===null?0:Date.now()-respawnSince,budgetExhausted:budget.exhausted,noProgressMs:Math.max(0,Date.now()-lastProgress-Math.max(0,2*c.apiMs-30000)),agentGoalValidationFailures:runtimes.map(r=>r.executionStatus.hasLongGoal?0:r.executionStatus.goalValidationFailures),agentNoProgressMs:runtimes.map(r=>r.executionStatus.progress.noProgressMs),consecutiveFailures:Math.max(0,...failureStreak.values())})??'';
+  reason=creditBlocked?'credit_required':budget.unsettledUsage?'usage_unknown':pilotStopReason({elapsedMs:Date.now()-started,maxMs:runtimeMs,authorizedMaxMs:extended?1800000:300000,observeStalls,states,allowRespawn:true,respawnWaitMs:respawnSince===null?0:Date.now()-respawnSince,budgetExhausted:budget.exhausted,noProgressMs:Math.max(0,Date.now()-lastProgress-Math.max(0,2*c.apiMs-30000)),agentGoalValidationFailures:runtimes.map(r=>r.executionStatus.hasLongGoal?0:r.executionStatus.goalValidationFailures),agentNoProgressMs:runtimes.map(r=>r.executionStatus.progress.noProgressMs),consecutiveFailures:Math.max(0,...failureStreak.values())})??'';
   if(reason)break;
   for(const r of runtimes){const task=r.tick().catch(()=>{reason='runtime_error';});pending.add(task);void task.finally(()=>pending.delete(task));}
   await delay(Math.max(1,Math.min(100,runtimeMs-(Date.now()-started))));
