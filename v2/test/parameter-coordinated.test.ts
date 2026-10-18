@@ -99,7 +99,7 @@ test('coordinated API input carries lifecycle evidence and removes synthetic pre
  }) as typeof fetch);
  await b.supervise(fixture(),{...input,plan:intent(),planningState,selectionFeedbackStatus},new AbortController().signal);
  const state=decodeJevState(captured[0].state);
- assert.deepEqual(state.planningState,planningState);assert.deepEqual(state.selectionFeedbackStatus,selectionFeedbackStatus);
+ assert.deepEqual(state.planningState,planningState);assert.equal(state.selectionFeedbackStatus.total,0);assert.deepEqual(state.selectionFeedbackStatus.entries,[]);
  assert.ok(!('preferred' in state.plan));assert.ok(!('reconsider' in captured[0].questions.action.criteria));
 });
 

@@ -94,7 +94,7 @@ test('separate long-goal request explicitly asks for JSON without relying on obs
 
 test('reflection reserves its actual larger output ceiling and identifies truncated output',async()=>{
  const c={...config(),llmKey:'test',maxOutput:512};const budget=new Budget(3,1);let truncate=false;
- const brain=new ApiBrain(c,budget,(async(_url:any,init:any)=>{const req=JSON.parse(init.body);const limit=req.max_completion_tokens??req.max_tokens;assert.equal(limit,2048);assert.ok(budget.reservedUsd>=limit*c.outputRate/1e6);return Response.json({choices:[{finish_reason:truncate?'length':'stop',message:{content:'{"updates":[]}'}}],usage:{prompt_tokens:10,completion_tokens:10}});}) as typeof fetch);
+ const brain=new ApiBrain(c,budget,(async(_url:any,init:any)=>{const req=JSON.parse(init.body);const limit=req.max_completion_tokens??req.max_tokens;assert.equal(limit,4096);assert.ok(budget.reservedUsd>=limit*c.outputRate/1e6);return Response.json({choices:[{finish_reason:truncate?'length':'stop',message:{content:'{"updates":[]}'}}],usage:{prompt_tokens:10,completion_tokens:10}});}) as typeof fetch);
  const input={revision:0,through:0,episodes:[],guides:[],feedback:'Invalid guideline uncertainty: max 300 characters'};
  assert.deepEqual(await brain.reflect(input,new AbortController().signal),[]);truncate=true;await assert.rejects(brain.reflect(input,new AbortController().signal),/truncated/);assert.equal(budget.reservedUsd,0);
 });

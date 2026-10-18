@@ -78,8 +78,8 @@ export class Runtime {
   }catch{if(!this.closed)this.log('social_error');}finally{this.socialPending=false;}
  }
  async reflectMemory(force=false,urgent=false){
-  const memory=this.options.memory;if(this.options.reflectionEnabled===false||this.closed||this.reflectionPending||!memory||!this.brain.reflect||!memory.pending())return;
-  if(!force&&(Date.now()-this.lastReflection<(this.options.reflectionMs??60000)||(!urgent&&memory.pending()<4)))return;
+  const memory=this.options.memory;if(this.options.reflectionEnabled===false||this.closed||this.reflectionPending||!memory||!this.brain.reflect||(!memory.pending()&&!memory.needsMaintenance()))return;
+  if(!force&&(Date.now()-this.lastReflection<(this.options.reflectionMs??60000)||(!urgent&&memory.pending()<4&&!memory.needsMaintenance())))return;
   this.reflectionPending=true;this.lastReflection=Date.now();
   try{const input={...memory.reflection(),feedback:this.reflectionFeedback},updates=await this.brain.reflect(input,this.lifetime.signal);
    if(!this.closed&&!this.lifetime.signal.aborted){memory.apply(input,updates,this.brain.reflectionModel);this.reflectionFeedback=undefined;this.log('memory_reflected',{through:input.through});}

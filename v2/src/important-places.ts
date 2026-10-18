@@ -10,7 +10,7 @@ const coordinateId=(dimension:string,p:SeenBlock['position'])=>'place_'+createHa
 export function placeEvidence(s:Snapshot):PlaceEvidence[]{
  if(!s.ready||!s.dimension)return [];
  const cells=new Map<string,SeenBlock>();
- for(const b of [...s.places??[],...s.vision?.blocks??[]]){const id=coordinateId(s.dimension,b.position),old=cells.get(id);if(!old||b.lastSeen>=old.lastSeen)cells.set(id,b);}
+ for(const b of [...s.vision?.blocks??[]]){const id=coordinateId(s.dimension,b.position),old=cells.get(id);if(!old||b.lastSeen>=old.lastSeen)cells.set(id,b);}
  const current=[...cells].map(([id,b])=>({...structuredClone(b),dimension:s.dimension!,id:id+'_'+createHash('sha256').update(JSON.stringify([b.name,b.lastSeen])).digest('hex').slice(0,12)}));
  const ids=new Set(current.map(b=>coordinateId(b.dimension,b.position)));
  for(const p of s.importantPlaces??[]){if(ids.has(p.id))continue;const b={name:p.lastObservedBlock,position:p.position,lastSeen:p.lastSeen};current.push({...b,dimension:p.dimension,id:p.id+'_'+createHash('sha256').update(JSON.stringify([b.name,b.lastSeen])).digest('hex').slice(0,12)});}

@@ -3,7 +3,7 @@ import {rememberedPlaces} from '../src/selector-memory.js';import {MockWorld} fr
 import {ImportantPlaces,placeEvidence} from '../src/important-places.js';
 import {mkdtempSync,rmSync,readFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
 import {ApiBrain,Budget} from '../src/providers.js';import {config} from '../src/config.js';
-function evidence(){const s=new MockWorld().snapshot();s.dimension='overworld';s.vision={yaw:0,pitch:0,blocks:[]};s.places=Array.from({length:20},(_,i)=>({name:'stone',position:{x:i,y:64,z:0},lastSeen:1}));return {s,ev:placeEvidence(s)};}
+function evidence(){const s=new MockWorld().snapshot();s.dimension='overworld';s.vision={yaw:0,pitch:0,blocks:[]};s.places=Array.from({length:20},(_,i)=>({name:'stone',position:{x:i,y:64,z:0},lastSeen:1}));s.vision.blocks=structuredClone(s.places);return {s,ev:placeEvidence(s)};}
 test('LLM selects importance and all curated coordinates are supplied without top-k',()=>{
  const {s,ev}=evidence(),m=new ImportantPlaces();assert.equal(rememberedPlaces(s).length,0);
  for(const group of [ev.slice(0,10),ev.slice(10)])m.apply(group.map(e=>({evidenceId:e.id,label:'Meeting point',reason:'Useful for rendezvous'})),ev);

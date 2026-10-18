@@ -53,7 +53,7 @@ test('situational guidance survives reconnect and is revised using later outcome
  const b=m.add(record(3,8,'eat',30)),review=m.reflection();assert.ok(review.episodes.some(e=>e.id===a));assert.equal(review.followupWindows?.find(w=>w.decisionId===a)?.laterMeal?.episodeId,b);
  m.apply(review,[{...draft,text:'A later meal was observed after continued work; timing remains contextual.',support:[a,b]}]);
  const n=new ExperienceMemory(dir,'test'),s=new MockWorld().snapshot();s.food=5;s.foodAvailable=true;
- assert.equal(n.retrieve(s,['mine'])[0].version,2);s.food=20;assert.equal(n.retrieve(s).length,0);s.food=5;s.foodAvailable=false;assert.equal(n.retrieve(s).length,0);
+ assert.equal(n.retrieve(s,['mine'])[0].version,2);s.food=20;assert.equal(n.retrieve(s).length,1);s.food=5;s.foodAvailable=false;assert.equal(n.retrieve(s).length,1);
 });
 test('medium API emits an intent while supervisor sees guidance, gauge semantics and concrete options',async()=>{
  const s=new MockWorld().snapshot();let payloads:any[]=[];

@@ -5,10 +5,10 @@ import type {ActionRecord} from './planning.js';
 import type {Snapshot,Action} from './types.js';
 import {actions} from './types.js';
 export type Episode={id:string;session:string;record:ActionRecord;guidanceUsed:{id:string;version:number}[]};
-export type GuideDraft={id:string;status:'active'|'retired';text:string;uncertainty:string;scope:{species:string[];equipment:string[];health:[number,number];food?:[number,number];hasFood?:boolean;inventory?:{item:string;min:number}[];action:Action};support:string[];counterexamples:string[]};
+export type GuideDraft={supersedes?:string[];revisionReason?:string;id:string;status:'active'|'retired';text:string;uncertainty:string;scope:{species:string[];equipment:string[];health:[number,number];food?:[number,number];hasFood?:boolean;inventory?:{item:string;min:number}[];action:Action};support:string[];counterexamples:string[]};
 export type Guide=GuideDraft&{version:number;updatedAt:number;model:string};
-export type Reflection={followupWindows?:ReturnType<typeof followupWindows>;feedback?:string;passiveSummary?:{count:number;byAction:Record<string,number>;note:string};revision:number;through:number;episodes:Episode[];guides:Guide[]};
-type Data={schema:1;profile:string;revision:number;reviewed:number;episodes:Episode[];guides:Guide[];revisions:Guide[]};
+export type Reflection={maintenance?:boolean;followupWindows?:ReturnType<typeof followupWindows>;feedback?:string;passiveSummary?:{count:number;byAction:Record<string,number>;note:string};revision:number;through:number;episodes:Episode[];guides:Guide[]};
+type Data={lastMaintenanceAt?:number;schema:1;profile:string;revision:number;reviewed:number;episodes:Episode[];guides:Guide[];revisions:Guide[]};
 export class ExperienceMemory {
  readonly session=randomUUID();
  private file:string;private lock:string;private data:Data;
@@ -33,13 +33,14 @@ export class ExperienceMemory {
   const e:Episode={id:randomUUID(),session:this.session,record:structuredClone(record),guidanceUsed:structuredClone(used)};
   this.change(d=>{d.episodes.push(e);});return e.id;
  }
- retrieve(s:Snapshot,actions:Action[]=[]):Guide[]{
-  this.data=this.read();const species=new Set(s.enemies?.map(e=>e.kind)??[]),gear=new Set(s.equipment?.map(e=>e.name)??[]);
-  return structuredClone(this.data.guides.filter(g=>g.status==='active'&&s.health>=g.scope.health[0]&&s.health<=g.scope.health[1]
-   &&(g.scope.food===undefined||s.food>=g.scope.food[0]&&s.food<=g.scope.food[1])&&(g.scope.hasFood===undefined||g.scope.hasFood===(s.foodAvailable??s.canEat))&&(g.scope.inventory??[]).every(t=>(s.inventory??[]).filter(i=>i.name===t.item).reduce((n,i)=>n+i.count,0)>=t.min)
-   &&(!g.scope.species.length||g.scope.species.some(x=>species.has(x)))&&g.scope.equipment.every(x=>gear.has(x)))
-   .sort((a,b)=>guideRelevance(b,s,actions)-guideRelevance(a,s,actions)||b.updatedAt-a.updatedAt).slice(0,4).map(g=>['gather','dig_block','inspect_chest'].includes(g.scope.action)?{...g,legacyAction:g.scope.action,scope:{...g.scope,action:(String(g.scope.action)==='inspect_chest'?'inspect_container':'mine') as Action}}:g));
+ retrieve(_s?:Snapshot,_actions:Action[]=[]):Guide[]{
+  this.data=this.read();return structuredClone(this.data.guides.filter(g=>g.status==='active').map(g=>['gather','dig_block','inspect_chest'].includes(g.scope.action)?{...g,legacyAction:g.scope.action,scope:{...g.scope,action:(String(g.scope.action)==='inspect_chest'?'inspect_container':'mine') as Action}}:g));
  }
+ needsMaintenance(now=Date.now()){
+  this.data=this.read();const active=this.data.guides.filter(g=>g.status==='active');
+  return active.length>0&&now-(this.data.lastMaintenanceAt??0)>=(JSON.stringify(guidebookView(active)).length>6000?60000:300000);
+ }
+
  pending(){this.data=this.read();return this.data.episodes.length-this.data.reviewed;}
  reflection():Reflection{
   this.data=this.read();const d=this.data;
@@ -53,7 +54,7 @@ export class ExperienceMemory {
   }
   const byAction:Record<string,number>={};for(const e of passive)byAction[e.record.decision.action]=(byAction[e.record.decision.action]??0)+1;
   batch.push(...passive.slice(0,1));if(passive.length>1)batch.push(passive[passive.length-1]);
-  const relevant=d.guides.filter(g=>batch.some(e=>g.scope.action===e.record.decision.action||g.scope.food!==undefined||g.scope.hasFood!==undefined||e.record.before.enemies.some(x=>g.scope.species.includes(x.kind)))).slice(-2);
+  const relevant=d.guides.filter(g=>g.status==='active');
   const refs=new Set(relevant.flatMap(g=>[...g.support,...g.counterexamples]));
   const prior=d.episodes.slice(0,d.reviewed),contrasts:Episode[]=[];
   for(const action of new Set(batch.map(e=>e.record.decision.action).filter(a=>a!=='look'&&a!=='idle'))){
@@ -61,8 +62,8 @@ export class ExperienceMemory {
   }
   // Revisit earlier choices when later outcomes arrive, including a previously deferred meal.
   const temporal=d.episodes.slice(0,end).filter(e=>batch.some(b=>e.session===b.session&&e.record.endedAt<=b.record.startedAt&&b.record.startedAt-e.record.endedAt<=120000)).slice(-12);
-  const episodes=[...new Map([...batch,...temporal,...d.episodes.filter(e=>refs.has(e.id)),...contrasts.slice(-12)].map(e=>[e.id,e])).values()]; // At most 10 batch + 32 referenced + 12 contrast episodes; never truncate referenced evidence.
-  return structuredClone({revision:d.revision,through:end,episodes,guides:relevant,followupWindows:followupWindows(episodes),passiveSummary:{count:passive.length,byAction,note:'Raw episodes retained. Unchanged successful idle/look summarized; this does not prove no new visual information. Only explicitly supplied episode IDs may support guidance.'}});
+  const episodes=[...new Map([...batch,...temporal,...d.episodes.filter(e=>refs.has(e.id)),...contrasts.slice(-12)].map(e=>[e.id,e])).values()]; // Bounded new/contrast batches plus every active-guide evidence reference; never truncate referenced evidence.
+  return structuredClone({maintenance:this.needsMaintenance(),revision:d.revision,through:end,episodes,guides:relevant,followupWindows:followupWindows(episodes),passiveSummary:{count:passive.length,byAction,note:'Raw episodes retained. Unchanged successful idle/look summarized; this does not prove no new visual information. Only explicitly supplied episode IDs may support guidance.'}});
  }
  private validate(g:any,ids:Set<string>,historical=false){
   const range=(x:any)=>Array.isArray(x)&&x.length===2&&x.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)&&x[0]<=x[1];
@@ -78,8 +79,16 @@ export class ExperienceMemory {
   if(!g||typeof g.id!=='string'||!/^[a-zA-Z0-9_-]{1,60}$/.test(g.id)||!['active','retired'].includes(g.status)||typeof g.text!=='string'||!g.text.trim()||g.text.length>600||typeof g.uncertainty!=='string'||!g.uncertainty.trim()||g.uncertainty.length>300||!g.scope||!(actions.includes(g.scope.action)||historical&&['gather','dig_block','inspect_chest'].includes(g.scope.action))||!list(g.scope.species,6)||!list(g.scope.equipment,6)||!Array.isArray(g.scope.health)||g.scope.health.length!==2||!g.scope.health.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)||g.scope.health[0]>g.scope.health[1]||!list(g.support,8)||!g.support.length||!list(g.counterexamples,8)||[...g.support,...g.counterexamples].some(x=>!ids.has(x))||g.support.some((x:string)=>g.counterexamples.includes(x)))throw Error('Invalid or unsupported guideline');
  }
  apply(input:Reflection,updates:unknown,model='unspecified'){
-  if(!Array.isArray(updates)||updates.length>6)throw Error('Invalid guideline updates');
-  const ids=new Set(input.episodes.map(e=>e.id));for(const g of updates)this.validate(g,ids);
+  if(!Array.isArray(updates)||updates.length>32)throw Error('Invalid guideline updates');
+  const ids=new Set(input.episodes.map(e=>e.id));for(const g of updates){
+   this.validate(g,ids);
+   // Old persisted drafts can be retired verbatim; active revisions must be concise.
+   if(g.status==='active'&&(g.text.length>240||g.uncertainty.length>160))throw Error('Invalid guideline: one concise sentence max240 chars and uncertainty max160 chars');
+   if(g.revisionReason!==undefined&&(typeof g.revisionReason!=='string'||!g.revisionReason.trim()||g.revisionReason.length>240))throw Error('Invalid guideline revision reason');
+   if(g.supersedes!==undefined&&(!Array.isArray(g.supersedes)||!g.supersedes.length||new Set(g.supersedes).size!==g.supersedes.length||g.supersedes.includes(g.id)||g.status!=='active'||typeof g.revisionReason!=='string'||!g.revisionReason.trim()||g.revisionReason.length>240))throw Error('Invalid guideline merge: supersedes must be nonempty other guide IDs, never this draft ID; active status and revisionReason required; omit supersedes when not merging');
+  }
+  const merged=updates.flatMap(g=>g.supersedes??[]);
+  if(new Set(merged).size!==merged.length||merged.some(id=>updates.some(g=>g.id===id)))throw Error('Invalid overlapping guideline merge');
   if(new Set(updates.map(g=>g.id)).size!==updates.length)throw Error('Duplicate guideline update');
   this.change(d=>{
    if(d.revision!==input.revision||input.through<d.reviewed||input.through>d.episodes.length)throw Error('Stale memory reflection');
@@ -87,10 +96,16 @@ export class ExperienceMemory {
    for(const raw of updates){
     const old=d.guides.find(g=>g.id===raw.id);if(old&&!known.has(raw.id))throw Error('Unseen guideline revision');
     if(old&&old.counterexamples.some(id=>!raw.counterexamples.includes(id)))throw Error('Cannot silently erase counterexamples');
-    const g:Guide={id:raw.id,status:raw.status,text:raw.text,uncertainty:raw.uncertainty,scope:structuredClone(raw.scope),support:[...new Set(raw.support)] as string[],counterexamples:[...new Set(raw.counterexamples)] as string[],version:(old?.version??0)+1,updatedAt:Date.now(),model};
+    for(const id of raw.supersedes??[]){
+     const source=d.guides.find(g=>g.id===id);
+     if(!source||source.status!=='active'||!known.has(id))throw Error('Unseen guideline merge');
+     if(source.counterexamples.some(x=>!raw.counterexamples.includes(x))||!source.support.some(x=>raw.support.includes(x)))throw Error('Cannot erase merge evidence or counterexamples');
+    }
+    const g:Guide={...(raw.supersedes?{supersedes:[...raw.supersedes]}:{}),...(typeof raw.revisionReason==='string'?{revisionReason:raw.revisionReason}:{}),id:raw.id,status:raw.status,text:raw.text,uncertainty:raw.uncertainty,scope:structuredClone(raw.scope),support:[...new Set(raw.support)] as string[],counterexamples:[...new Set(raw.counterexamples)] as string[],version:(old?.version??0)+1,updatedAt:Date.now(),model};
     d.guides=d.guides.filter(x=>x.id!==g.id);d.guides.push(g);d.revisions.push(structuredClone(g));
+    for(const id of raw.supersedes??[]){const source=d.guides.find(x=>x.id===id)!;source.status='retired';source.version++;source.updatedAt=Date.now();source.model=model;source.revisionReason=`Merged into ${g.id}: ${raw.revisionReason}`;d.revisions.push(structuredClone(source));}
    }
-   d.reviewed=input.through;d.revision++;
+   d.reviewed=input.through;d.revision++;d.lastMaintenanceAt=Date.now();
   });
  }
 }
@@ -102,9 +117,8 @@ export function botMemoryLocation(mode:string,name:string,c:{host:string;port:nu
 
 export function openBotMemory(mode:string,name:string,c:{host:string;port:number;version:string},root='runs/memory/experience'){const {dir,profile}=botMemoryLocation(mode,name,c,root);return new ExperienceMemory(dir,profile);}
 
-function guideRelevance(g:Guide,s:Snapshot,actions:Action[]){
- return (actions.includes(g.scope.action)?3:0)+(g.scope.food?4:0)+(g.scope.hasFood!==undefined?2:0)+(g.scope.inventory?.length??0)*2+g.scope.species.length+g.scope.equipment.length+(g.scope.action==='eat'&&s.food<20&&s.canEat?2:0);
-}
+// All active hypotheses, no top-k or condition filtering. Conditions remain explicit.
+export function guidebookView(guides:Guide[]){return guides.filter(g=>g.status==='active').map(g=>({id:g.id,version:g.version,text:g.text,scope:g.scope,uncertainty:g.uncertainty,evidence:{supportCount:g.support.length,counterexampleCount:g.counterexamples.length}}));}
 // Descriptive sequence evidence, never a label saying food=5 requires eating.
 // Same session only; a finite observation window cannot establish future safety.
 export function followupWindows(episodes:Episode[]){

@@ -1,3 +1,4 @@
+import {decodeReferenceRequest} from '../src/jev-references.js';
 import {decodeJevState} from '../src/jev-state.js';
 import test from 'node:test';import assert from 'node:assert/strict';
 import {parameterSupervise,selectValue,type Ask} from '../src/parameter-supervisor.js';
@@ -17,7 +18,7 @@ test('target enemy and followed player are model choices rather than nearest/con
 test('hierarchical transport keeps every argument reachable with at most 255 choices',async()=>{const calls:any[]=[];const v=await selectValue('number',Array.from({length:1000},(_,i)=>i),responder('wait',{number:n=>n===999},calls),{});assert.equal(v,999);assert.equal(calls.length,2);for(const c of calls)assert.ok(Object.keys(c.questions.number.criteria).length<=255);});
 test('missing argument domain is explicit; no locally chosen fallback execution',async()=>{const s=fixture();s.placementSites=[];const d=await parameterSupervise(s,input,responder('place_block'));assert.equal(d.choice,'unresolved');assert.equal(d.selected,undefined);assert.match(d.reason!,/placementSite/);assert.equal(d.review,'medium');});
 test('model-selected wait duration and maintain do not require unrelated arguments',async()=>{const calls:any[]=[];const d=await parameterSupervise(fixture(),input,responder('wait',{waitMilliseconds:n=>n===1700},calls));assert.equal(d.selected?.plan.waitMs,1700);const c=await parameterSupervise(fixture(),{...input,execution:{id:1,action:'mine',plan:{goal:'wood',preferred:'mine'},elapsedMs:1}},responder('continue',{},calls));assert.equal(c.choice,'continue');assert.equal(calls.length,3);});
-test('actual API path performs action then conditional argument selection',async()=>{const s=fixture(),calls:any[]=[],respond=responder('craft',{recipeOutput:v=>v==='recipe_19',recipeExecutions:n=>n===4},calls);const b=new ApiBrain({...config(),mode:'jev',targetPolicy:'observed',jevKey:'test',llmKey:'test'},new Budget(20,2),(async(_url:any,init:any)=>{const p=JSON.parse(init.body);return Response.json({answers:await respond(p.questions,decodeJevState(p.state)),usage:{input_tokens:1,output_tokens:0}});}) as typeof fetch);assert.equal(b.parameterSelection,true);const d=await b.supervise(s,input,new AbortController().signal);assert.equal(d.selected?.plan.craft?.count,4);assert.equal(calls.length,3);assert.equal(calls[2].context.boundArguments.recipeOutput,'recipe_19');});
+test('actual API path performs action then conditional argument selection',async()=>{const s=fixture(),calls:any[]=[],respond=responder('craft',{recipeOutput:v=>v==='recipe_19',recipeExecutions:n=>n===4},calls);const b=new ApiBrain({...config(),mode:'jev',targetPolicy:'observed',jevKey:'test',llmKey:'test'},new Budget(20,2),(async(_url:any,init:any)=>{const p=JSON.parse(init.body);return Response.json({answers:await respond(decodeReferenceRequest(p.state,p.questions).questions,decodeReferenceRequest(p.state,p.questions).context),usage:{input_tokens:1,output_tokens:0}});}) as typeof fetch);assert.equal(b.parameterSelection,true);const d=await b.supervise(s,input,new AbortController().signal);assert.equal(d.selected?.plan.craft?.count,4);assert.equal(calls.length,3);assert.equal(calls[2].context.boundArguments.recipeOutput,'recipe_19');});
 test('runtime applies selected argument plan directly and switches without three confirmations',async()=>{
  class W extends MockWorld{starts:string[]=[];override async execute(a:any,signal:AbortSignal){this.starts.push(a);await delay(10000,undefined,{signal});return 'done';}}
  const w=new W();let count=0;const b:Brain={parameterSelection:true,choose:new MockBrain().choose,plan:()=>new Promise(()=>{}),supervise:async()=>({choice:'selected',confidence:.01,review:'none',routes:{},selected:{id:'selected',action:++count===1?'mine':'look',plan:count===1?{goal:'wood',preferred:'mine',modelSelected:true,mine:{position:{x:1,y:64,z:0},expected:'oak_log',keepTool:true,maxMs:5000}}:{goal:'observe',preferred:'look',modelSelected:true,look:{yaw:1,pitch:0}}}})};
@@ -66,7 +67,7 @@ test('LLM planning sees unexecuted JEV evidence, retained across generic reconsi
 });
 
 test('destination arguments exclude reached references while retaining their factual context',async()=>{
- const s=fixture();s.position={x:-1.5,y:64,z:-1.5};s.navigationTargets=[{x:-2,y:65,z:-3},{x:8,y:64,z:0}];const calls:any[]=[];
+ const s=fixture();s.position={x:-1.5,y:64,z:-1.5};s.navigationTargets=[{x:-2,y:65,z:-3},{x:8,y:64,z:0}];s.vision={yaw:0,pitch:0,blocks:s.navigationTargets.map(position=>({name:'stone',position,lastSeen:1}))};const calls:any[]=[];
  const d=await parameterSupervise(s,input,responder('move',{destination:p=>p.x===8},calls));
  assert.deepEqual(d.selected?.plan.destination,{x:8,y:64,z:0});
  const q=calls.find(c=>c.questions.destination);assert.ok(q.context.argumentSemantics.alreadyWithinArrivalRadius.coordinates.some((p:any)=>p.x===-2&&p.y===65&&p.z===-3));assert.equal(q.context.argumentSemantics.arrivalRadiusBlocks,2);
@@ -97,10 +98,10 @@ test('runtime provider separates withdrawal while preserving coordinated review 
   const calls:string[][]=[];
   const brain=new ApiBrain({...config(),mode:'jev',jevKey:'test-only-jev',argumentContract:'coordinated',withdrawalMode:mode},new Budget(20,2),(async(_url:any,init:any)=>{
    const body=JSON.parse(init.body),keys=Object.keys(body.questions);calls.push(keys);
-   const sent=decodeJevState(body.state);assert.ok(sent.lookFeedback);assert.ok(sent.movementEvidence);assert.match(sent.moveSemantics,/radius 2/);assert.deepEqual(sent.lookFeedback.recentLooks.map((r:any)=>r.id),[42]);
+   const sent=decodeReferenceRequest(body.state,body.questions).context;assert.ok(sent.lookFeedback);assert.equal(sent.movementEvidence,undefined);assert.match(sent.moveSemantics,/radius 2/);assert.deepEqual(sent.lookFeedback.recentLooks.map((r:any)=>r.id),[42]);
    return Response.json({answers:Object.fromEntries(keys.map(k=>[k,{type:'choice',confidence:.01,choice:k==='action'?'move':k==='review'?'none':k==='bindingDecision'?(withdraw?'withdraw':'bind'):Object.keys(body.questions[k].criteria).find(v=>v.startsWith('value_'))}])),usage:{input_tokens:100,output_tokens:0}});
   }) as typeof fetch);
-  const state=fixture();state.vision!.blocks=[];state.places=[];
+  const state=fixture();state.vision!.blocks=[{name:"stone",position:{x:5,y:64,z:0},lastSeen:1}];state.places=[];
   const d=await brain.supervise(state,{...input,recentLookResults:[{id:42,outcome:'succeeded',view:{camera:{yawDeltaDegrees:0,pitchDeltaDegrees:0}}}]},new AbortController().signal);
   assert.equal(d.review,'none');assert.equal(calls[mode==='proposal'?2:1][0],'bindingDecision');
   if(withdraw){assert.equal(d.choice,'unresolved');assert.equal(d.selected,undefined);assert.equal(calls.length,mode==='proposal'?3:2);}

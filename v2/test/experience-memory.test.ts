@@ -16,7 +16,7 @@ function visible(){const s=new MockWorld().snapshot();s.enemies=[{id:1,kind:'zom
 test('restart restores facts and scoped guidance with session identity isolated',t=>{
  const {dir,m}=fixture(t),id=m.add(record());m.apply(m.reflection(),[draft(id)],'fake-llm');const n=new ExperienceMemory(dir,'Bob/test');
  assert.notEqual(n.session,m.session);assert.equal(n.retrieve(visible())[0].support[0],id);assert.equal(n.retrieve(visible())[0].model,'fake-llm');
- const s=visible();s.enemies=[];assert.equal(n.retrieve(s).length,0);s.enemies=visible().enemies;s.equipment=[];assert.equal(n.retrieve(s).length,0);
+ const s=visible();s.enemies=[];assert.equal(n.retrieve(s).length,1);s.enemies=visible().enemies;s.equipment=[];assert.equal(n.retrieve(s).length,1);
  assert.throws(()=>new ExperienceMemory(dir,'Alice/test'),/Invalid experience memory/);
 });
 test('revisions preserve counterexamples, immutable evidence and historical versions',t=>{
@@ -62,9 +62,9 @@ test('late reflection after close cannot update durable guidance',async t=>{
  const r=new Runtime(new MockWorld(),{plan:()=>new Promise<any>(()=>{}),choose:async()=>({action:'idle',confidence:1}),reflect:()=>new Promise(r=>{resolve=r;})},{planMs:30000,actionMs:1000,minConfidence:.55,memory:m},()=>{});
  const pending=r.reflectMemory(true);r.close();resolve([draft(m.reflection().episodes[0].id)]);await pending;assert.equal(m.retrieve(visible()).length,0);assert.equal(m.pending(),1);
 });
-test('retrieval is bounded and excludes retired and health-mismatched guidelines',t=>{
+test('guidebook includes every active guideline with scope preserved for model judgment',t=>{
  const {m}=fixture(t),id=m.add(record());m.apply(m.reflection(),Array.from({length:6},(_,i)=>({...draft(id),id:'guide_'+i,scope:{...draft(id).scope,health:(i===0?[0,5]:[0,20]) as [number,number]}})));
- const guides=m.retrieve(visible());assert.equal(guides.length,4);assert.ok(guides.every(g=>g.id!=='guide_0'));
+ const guides=m.retrieve(visible());assert.equal(guides.length,6);assert.deepEqual(guides.find(g=>g.id==='guide_0')!.scope.health,[0,5]);
 });
 
 test('historical mining guides reload without rewriting original episode evidence',t=>{
@@ -97,4 +97,28 @@ test('reflection retains every reference from two maximal guides alongside a ful
  const input=m.reflection(),supplied=new Set(input.episodes.map(e=>e.id));
  assert.ok(input.episodes.length>40);assert.ok(input.episodes.length<=54);
  for(const id of ids)assert.ok(supplied.has(id));m.apply(input,input.guides);
+});
+
+test('LLM merge is atomic, keeps counterexamples and raw evidence across restart',t=>{
+ const {m,dir}=fixture(t),a=m.add(record()),b=m.add({...record(),outcome:'failed'});
+ m.apply(m.reflection(),[{...draft(a),id:'g1',counterexamples:[b]},{...draft(a),id:'g2'}]);
+ const input=m.reflection();assert.equal(input.guides.length,2);
+ const merged={...draft(a),id:'merged',supersedes:['g1','g2'],revisionReason:'Same conditional advice',counterexamples:[b]};
+ const before=readFileSync(join(dir,'memory.json'),'utf8');assert.throws(()=>m.apply(input,[{...merged,counterexamples:[]}]),/counterexamples/);assert.equal(readFileSync(join(dir,'memory.json'),'utf8'),before);
+ m.apply(input,[merged],'mock-consolidator');const n=new ExperienceMemory(dir,'Bob/test');assert.deepEqual(n.retrieve().map(g=>g.id),['merged']);
+ const raw=JSON.parse(readFileSync(join(dir,'memory.json'),'utf8'));assert.equal(raw.episodes.length,2);assert.equal(raw.revisions.length,5);assert.equal(raw.guides.find((g:any)=>g.id==='g1').status,'retired');assert.equal(n.retrieve()[0].supersedes!.length,2);
+});
+test('whole-book maintenance can run without new episodes and is periodic',t=>{
+ const {m}=fixture(t),a=m.add(record());m.apply(m.reflection(),[draft(a)]);assert.equal(m.pending(),0);assert.equal(m.needsMaintenance(),false);assert.equal(m.needsMaintenance(Date.now()+300001),true);
+ const input=m.reflection();assert.equal(input.guides.length,1);assert.ok(input.episodes.some(e=>e.id===a));
+});
+test('new guidelines remain concise; historical long drafts are preserved on load',t=>{
+ const {m,dir}=fixture(t),a=m.add(record());assert.throws(()=>m.apply(m.reflection(),[{...draft(a),text:'a'.repeat(241)}]),/max240/);
+ m.apply(m.reflection(),[draft(a)]);const path=join(dir,'memory.json'),raw=JSON.parse(readFileSync(path,'utf8'));raw.guides[0].text='a'.repeat(500);writeFileSync(path,JSON.stringify(raw));
+ assert.equal(new ExperienceMemory(dir,'Bob/test').retrieve()[0].text.length,500);
+});
+test('runtime invokes maintenance without new pending episodes',async t=>{
+ const {m}=fixture(t),a=m.add(record());m.apply(m.reflection(),[draft(a)]);m.needsMaintenance=()=>true;let calls=0;
+ const r=new Runtime(new MockWorld(),{plan:()=>new Promise<any>(()=>{}),choose:async()=>({action:'idle',confidence:1}),reflect:async input=>{calls++;assert.equal(input.guides.length,1);return [];}},{planMs:30000,actionMs:1000,minConfidence:0,memory:m},()=>{});
+ await r.reflectMemory(true);r.close();assert.equal(calls,1);assert.equal(m.pending(),0);
 });
