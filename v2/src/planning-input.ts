@@ -1,3 +1,4 @@
+import {executionEvidence} from './execution-evidence.js';
 import type {PlanningContext} from './planning.js';
 // Persisted evidence remains intact. Only duplicate prompt representations are
 // compacted; the current observation is already supplied separately as state.
@@ -14,5 +15,5 @@ export function planningInput(context?:PlanningContext){
   if(e.kind==='action'&&d){const {before,after,...facts}=d;return {...e,data:facts};}
   return e;
  });
- return out;
+ return {...out,executionEvidence:executionEvidence(out.recentActions??[])};
 }

@@ -1,3 +1,4 @@
+import {NavigationFailure,navigationEvidence} from './execution-evidence.js';
 import {MOVE_RADIUS,moveReached,MINE_APPROACH_RADIUS,MINE_SIGHT_APPROACH_RADIUS,MINE_PICKUP_MS,MINE_DEFAULT_DIG_MS} from './action-contracts.js';
 import {ImportantPlaces} from './important-places.js';
 import {localNavigationTargets} from './navigation.js';
@@ -412,21 +413,22 @@ export class MineflayerWorld implements World {
     try{
       for(let leg=0;leg<8;leg++){
         signal?.throwIfAborted();
+        const observed=new Map<string,import("./vision.js").SeenBlock>();const capture=()=>{for(const block of this.visible??[])observed.set(JSON.stringify(block.position),block);};capture();
         const feet=this.bot.entity.position.floored();
         if(goal.isEnd(feet as any))return;
         const p=this.bot.entity.position,yaw=Math.atan2(-(goal.x+.5-p.x),-(goal.z+.5-p.z));
-        await this.bot.look(yaw,-Math.PI/4,false);signal?.throwIfAborted();this.observe(true);
-        let path=this.bot.pathfinder.getPathTo(this.bot.pathfinder.movements,goal,200);
+        await this.bot.look(yaw,-Math.PI/4,false);signal?.throwIfAborted();this.observe(true);capture();
+        let scanned=false;let path=this.bot.pathfinder.getPathTo(this.bot.pathfinder.movements,goal,200);
         let end=path.path.at(-1);
         if(!end||end.x===feet.x&&end.y===feet.y&&end.z===feet.z){
           // A detour may begin beside/behind us. Turn the actual camera before
           // admitting those footholds; never query unseen supports as knowledge.
-          for(const turn of [Math.PI/2,Math.PI,-Math.PI/2]){
-            await this.bot.look(yaw+turn,-Math.PI/4,false);signal?.throwIfAborted();this.observe(true);
+          scanned=true;for(const turn of [Math.PI/2,Math.PI,-Math.PI/2]){
+            await this.bot.look(yaw+turn,-Math.PI/4,false);signal?.throwIfAborted();this.observe(true);capture();
           }
           path=this.bot.pathfinder.getPathTo(this.bot.pathfinder.movements,goal,200);end=path.path.at(-1);
         }
-        if(!end||end.x===feet.x&&end.y===feet.y&&end.z===feet.z)throw Error('Destination not reached: no observed route after local scan');
+        if(!end||end.x===feet.x&&end.y===feet.y&&end.z===feet.z)throw new NavigationFailure(navigationEvidence('no observed route after local scan',this.bot.entity.position,{x:goal.x,y:goal.y,z:goal.z},Math.sqrt((goal as any).rangeSq),path,[...observed.values()],scanned));
         const waypoint=path.status==='success'?goal:new goals.GoalNear(end.x,end.y,end.z,0);
         try{await this.bot.pathfinder.goto(waypoint);}finally{this.bot.pathfinder.setGoal(null);this.bot.clearControlStates();}
         signal?.throwIfAborted();

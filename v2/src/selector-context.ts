@@ -11,7 +11,7 @@ export function outcomeView(r:any){
  if(!r)return undefined;
  return {id:r.id,action:r.decision?.action??r.action,outcome:r.outcome,result:r.result,endedAt:r.endedAt,
   target:r.executionPlan?{destination:r.executionPlan.destination,mine:r.executionPlan.mine,build:r.executionPlan.build,craft:r.executionPlan.craft}:undefined,
-  changes:r.changes,mining:r.mining,pickup:r.pickup};
+  navigation:r.navigation,changes:r.changes,mining:r.mining,pickup:r.pickup};
 }
 // These are factual execution receipts, never locally inferred experience rules.
 export function feedbackView(status:any,fallback?:string){
@@ -37,7 +37,7 @@ function dialogueView(social:any,inbox:any[]){
 export function selectorContext(s:Snapshot,input:SupervisorInput,selection:Record<string,unknown>){
  const {recipeBook,places,placeEvidence,importantPlaces,messages,social,observedDestinationKeys,chatEvents,memoryGuidance,...observation}=currentModelState(s);
  return {observation,rememberedPlaces:importantPlaces??[],guidance:guidebookView(memoryGuidance??[]),
-  execution:input.execution,plan:input.plan?.intent?{goal:input.plan.goal,intent:input.plan.intent}:input.plan,goal:input.goal,
+  executionEvidence:input.executionEvidence,execution:input.execution,plan:input.plan?.intent?{goal:input.plan.goal,intent:input.plan.intent}:input.plan,goal:input.goal,
   recentResults:input.recentResults?.filter((r:any)=>r.id!==(input.recentOutcome as any)?.id),recentOutcome:outcomeView(input.recentOutcome),recentLookResults:input.recentLookResults,
   progress:input.progress,selectionFeedbackStatus:feedbackView(input.selectionFeedbackStatus,input.selectionFeedback),planningState:input.planningState,
   blockedInteractions:input.blockedInteractions,dialogue:dialogueView(social,input.inbox),...selection};
