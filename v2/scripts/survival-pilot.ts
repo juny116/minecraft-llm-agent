@@ -1,3 +1,4 @@
+import {decodeJevState} from '../src/jev-state.js';
 import {RecoveryMemory} from '../src/recovery.js';
 import {execFileSync} from 'node:child_process';
 import {noOpMove} from '../src/pilot-report.js';
@@ -19,7 +20,7 @@ if(!c.llmKey||!c.jevKey)throw Error('Missing API key');
 const dir=join('runs',`survival-pilot-${Date.now()}`);mkdirSync(dir,{recursive:true,mode:0o700});
 const ledger=new FunctionalLedger('runs/functional-cost-ledger.json',Math.min(c.maxCalls,extended?5000:300),Math.min(c.maxUsd,extended?2.25:.25),authorizedTotal);
 let creditBlocked=false;
-const transport:typeof fetch=async(url,init)=>{if(process.env.TRACE_MODEL_INPUTS==='1'&&typeof init?.body==='string'){const req=JSON.parse(init.body),input=req.messages?JSON.parse(req.messages.at(-1).content):req.state;log('api','model_input',{model:req.model,state:input.state??input.observation,plan:input.plan,requirements:input.responseRequirements,context:input,questions:req.questions});}const response=await fetch(url,init);if(response.status===402)creditBlocked=true;if(response.ok){const data=await response.clone().json();log('api','model_output',{model:String(url).startsWith(c.jevUrl)?c.jevModel:c.llmModel,content:data.choices?.[0]?.message?.content??data.answers,usage:data.usage});}else log('api','http_error',{status:response.status});return response;};
+const transport:typeof fetch=async(url,init)=>{if(process.env.TRACE_MODEL_INPUTS==='1'&&typeof init?.body==='string'){const req=JSON.parse(init.body),input=req.messages?JSON.parse(req.messages.at(-1).content):decodeJevState(req.state);log('api','model_input',{model:req.model,state:input.state??input.observation,plan:input.plan,requirements:input.responseRequirements,context:input,wireState:req.state,questions:req.questions});}const response=await fetch(url,init);if(response.status===402)creditBlocked=true;if(response.ok){const data=await response.clone().json();log('api','model_output',{model:String(url).startsWith(c.jevUrl)?c.jevModel:c.llmModel,content:data.choices?.[0]?.message?.content??data.answers,usage:data.usage});}else log('api','http_error',{status:response.status});return response;};
 const budget=ledger.budget,brain=new ApiBrain(c,budget,transport),worlds:MineflayerWorld[]=[],runtimes:Runtime[]=[],pending=new Set<Promise<void>>();
 let activityTimer:ReturnType<typeof setInterval>|undefined;
 let respawnSince:number|null=null;let reason='',lastProgress=Date.now();const failureStreak=new Map<string,number>();const runtimeMs=Math.min(c.runSeconds,extended?1800:300)*1000;
