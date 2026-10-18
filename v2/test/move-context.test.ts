@@ -11,3 +11,10 @@ test('approach semantics leaves every coordinate, withdrawal and original eviden
  assert.deepEqual(x.questions,q);assert.deepEqual(x.context.movementEvidence,c.movementEvidence);assert.match(x.context.moveSemantics,/radius 2/);
  const packed=jevLosslessRequest(x.context,x.questions);assert.deepEqual(decodeJevState(packed.state),x.context);assert.deepEqual(decodeJevQuestions(packed.questions),q);
 });
+
+test('observation runs preserve every ordered block, timestamp and unknown observation',()=>{
+ const places=Array.from({length:700},(_,i)=>({name:i%10?'stone':'dirt',position:{x:-500+i%30,y:60+Math.floor(i/30),z:-400},lastSeen:1000+Math.floor(i/30)}));
+ const evidence=movementEvidence({places,navigationTargets:[]});
+ assert.deepEqual(decodeMovementBlocks(evidence),places.map(b=>({...b,visibility:'historical'})));
+ assert.deepEqual(decodeMovementBlocks({observedBlocks:{origin:{x:0,y:0,z:0},timeBase:0,names:['stone'],runs:[[[0,null,0],[[1,2,3]]]]}})[0].lastSeen,undefined);
+});
