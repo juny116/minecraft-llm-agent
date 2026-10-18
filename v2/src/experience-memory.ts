@@ -5,9 +5,9 @@ import type {ActionRecord} from './planning.js';
 import type {Snapshot,Action} from './types.js';
 import {actions} from './types.js';
 export type Episode={id:string;session:string;record:ActionRecord;guidanceUsed:{id:string;version:number}[]};
-export type GuideDraft={id:string;status:'active'|'retired';text:string;uncertainty:string;scope:{species:string[];equipment:string[];health:[number,number];action:Action};support:string[];counterexamples:string[]};
+export type GuideDraft={id:string;status:'active'|'retired';text:string;uncertainty:string;scope:{species:string[];equipment:string[];health:[number,number];food?:[number,number];hasFood?:boolean;inventory?:{item:string;min:number}[];action:Action};support:string[];counterexamples:string[]};
 export type Guide=GuideDraft&{version:number;updatedAt:number;model:string};
-export type Reflection={feedback?:string;passiveSummary?:{count:number;byAction:Record<string,number>;note:string};revision:number;through:number;episodes:Episode[];guides:Guide[]};
+export type Reflection={followupWindows?:ReturnType<typeof followupWindows>;feedback?:string;passiveSummary?:{count:number;byAction:Record<string,number>;note:string};revision:number;through:number;episodes:Episode[];guides:Guide[]};
 type Data={schema:1;profile:string;revision:number;reviewed:number;episodes:Episode[];guides:Guide[];revisions:Guide[]};
 export class ExperienceMemory {
  readonly session=randomUUID();
@@ -33,11 +33,12 @@ export class ExperienceMemory {
   const e:Episode={id:randomUUID(),session:this.session,record:structuredClone(record),guidanceUsed:structuredClone(used)};
   this.change(d=>{d.episodes.push(e);});return e.id;
  }
- retrieve(s:Snapshot):Guide[]{
+ retrieve(s:Snapshot,actions:Action[]=[]):Guide[]{
   this.data=this.read();const species=new Set(s.enemies?.map(e=>e.kind)??[]),gear=new Set(s.equipment?.map(e=>e.name)??[]);
   return structuredClone(this.data.guides.filter(g=>g.status==='active'&&s.health>=g.scope.health[0]&&s.health<=g.scope.health[1]
+   &&(g.scope.food===undefined||s.food>=g.scope.food[0]&&s.food<=g.scope.food[1])&&(g.scope.hasFood===undefined||g.scope.hasFood===(s.foodAvailable??s.canEat))&&(g.scope.inventory??[]).every(t=>(s.inventory??[]).filter(i=>i.name===t.item).reduce((n,i)=>n+i.count,0)>=t.min)
    &&(!g.scope.species.length||g.scope.species.some(x=>species.has(x)))&&g.scope.equipment.every(x=>gear.has(x)))
-   .sort((a,b)=>(b.scope.species.length+b.scope.equipment.length)-(a.scope.species.length+a.scope.equipment.length)||b.updatedAt-a.updatedAt).slice(0,4).map(g=>['gather','dig_block','inspect_chest'].includes(g.scope.action)?{...g,legacyAction:g.scope.action,scope:{...g.scope,action:(String(g.scope.action)==='inspect_chest'?'inspect_container':'mine') as Action}}:g));
+   .sort((a,b)=>guideRelevance(b,s,actions)-guideRelevance(a,s,actions)||b.updatedAt-a.updatedAt).slice(0,4).map(g=>['gather','dig_block','inspect_chest'].includes(g.scope.action)?{...g,legacyAction:g.scope.action,scope:{...g.scope,action:(String(g.scope.action)==='inspect_chest'?'inspect_container':'mine') as Action}}:g));
  }
  pending(){this.data=this.read();return this.data.episodes.length-this.data.reviewed;}
  reflection():Reflection{
@@ -52,16 +53,20 @@ export class ExperienceMemory {
   }
   const byAction:Record<string,number>={};for(const e of passive)byAction[e.record.decision.action]=(byAction[e.record.decision.action]??0)+1;
   batch.push(...passive.slice(0,1));if(passive.length>1)batch.push(passive[passive.length-1]);
-  const relevant=d.guides.filter(g=>batch.some(e=>g.scope.action===e.record.decision.action||e.record.before.enemies.some(x=>g.scope.species.includes(x.kind)))).slice(-2);
+  const relevant=d.guides.filter(g=>batch.some(e=>g.scope.action===e.record.decision.action||g.scope.food!==undefined||g.scope.hasFood!==undefined||e.record.before.enemies.some(x=>g.scope.species.includes(x.kind)))).slice(-2);
   const refs=new Set(relevant.flatMap(g=>[...g.support,...g.counterexamples]));
   const prior=d.episodes.slice(0,d.reviewed),contrasts:Episode[]=[];
   for(const action of new Set(batch.map(e=>e.record.decision.action).filter(a=>a!=='look'&&a!=='idle'))){
    for(const success of [true,false])contrasts.push(...prior.filter(e=>e.record.decision.action===action&&(success?e.record.outcome==='succeeded':['failed','partial'].includes(e.record.outcome))).slice(-2));
   }
-  const episodes=[...new Map([...batch,...d.episodes.filter(e=>refs.has(e.id)),...contrasts.slice(-12)].map(e=>[e.id,e])).values()]; // At most 10 batch + 32 referenced + 12 contrast episodes; never truncate referenced evidence.
-  return structuredClone({revision:d.revision,through:end,episodes,guides:relevant,passiveSummary:{count:passive.length,byAction,note:'Raw episodes retained. Unchanged successful idle/look summarized; this does not prove no new visual information. Only explicitly supplied episode IDs may support guidance.'}});
+  // Revisit earlier choices when later outcomes arrive, including a previously deferred meal.
+  const temporal=d.episodes.slice(0,end).filter(e=>batch.some(b=>e.session===b.session&&e.record.endedAt<=b.record.startedAt&&b.record.startedAt-e.record.endedAt<=120000)).slice(-12);
+  const episodes=[...new Map([...batch,...temporal,...d.episodes.filter(e=>refs.has(e.id)),...contrasts.slice(-12)].map(e=>[e.id,e])).values()]; // At most 10 batch + 32 referenced + 12 contrast episodes; never truncate referenced evidence.
+  return structuredClone({revision:d.revision,through:end,episodes,guides:relevant,followupWindows:followupWindows(episodes),passiveSummary:{count:passive.length,byAction,note:'Raw episodes retained. Unchanged successful idle/look summarized; this does not prove no new visual information. Only explicitly supplied episode IDs may support guidance.'}});
  }
  private validate(g:any,ids:Set<string>,historical=false){
+  const range=(x:any)=>Array.isArray(x)&&x.length===2&&x.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)&&x[0]<=x[1];
+  if(g?.scope?.food!==undefined&&!range(g.scope.food)||g?.scope?.hasFood!==undefined&&typeof g.scope.hasFood!=='boolean'||g?.scope?.inventory!==undefined&&(!Array.isArray(g.scope.inventory)||g.scope.inventory.length>6||g.scope.inventory.some((t:any)=>!t||!/^[a-z0-9_]+$/.test(t.item)||!Number.isInteger(t.min)||t.min<0||t.min>2304)))throw Error('Invalid guideline situational scope');
   if(g?.scope&&(!Array.isArray(g.scope.health)||g.scope.health.length!==2||!g.scope.health.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)||g.scope.health[0]>g.scope.health[1]))throw Error('Invalid guideline scope.health: exactly [minimum,maximum] in 0..20; use [0,20] for any health, never []');
   if(g&&typeof g.text==='string'&&g.text.length>600)throw Error('Invalid guideline text: max 600 characters');
   if(g&&typeof g.uncertainty==='string'&&g.uncertainty.length>300)throw Error('Invalid guideline uncertainty: max 300 characters');
@@ -96,3 +101,18 @@ export function botMemoryLocation(mode:string,name:string,c:{host:string;port:nu
 }
 
 export function openBotMemory(mode:string,name:string,c:{host:string;port:number;version:string},root='runs/memory/experience'){const {dir,profile}=botMemoryLocation(mode,name,c,root);return new ExperienceMemory(dir,profile);}
+
+function guideRelevance(g:Guide,s:Snapshot,actions:Action[]){
+ return (actions.includes(g.scope.action)?3:0)+(g.scope.food?4:0)+(g.scope.hasFood!==undefined?2:0)+(g.scope.inventory?.length??0)*2+g.scope.species.length+g.scope.equipment.length+(g.scope.action==='eat'&&s.food<20&&s.canEat?2:0);
+}
+// Descriptive sequence evidence, never a label saying food=5 requires eating.
+// Same session only; a finite observation window cannot establish future safety.
+export function followupWindows(episodes:Episode[]){
+ const ordered=[...episodes].sort((a,b)=>a.record.startedAt-b.record.startedAt);
+ return ordered.filter(e=>e.record.before.food<20&&e.record.decision.action!=='eat'&&e.record.outcome!=='skipped').slice(-12).map(e=>{
+  const later=ordered.filter(n=>n.session===e.session&&n.id!==e.id&&(e.record.before.lifeGeneration===undefined||n.record.before.lifeGeneration===e.record.before.lifeGeneration)&&n.record.startedAt>=e.record.endedAt&&n.record.startedAt-e.record.endedAt<=120000);
+  const sequence=[e,...later],food=sequence.flatMap(n=>[n.record.before.food,n.record.after.food]);
+  const meal=later.find(n=>n.record.decision.action==='eat'&&n.record.changes.food>0);
+  return {decisionId:e.id,evidenceIds:sequence.map(n=>n.id),observedThrough:sequence.at(-1)!.record.endedAt,initialFood:e.record.before.food,minFood:Math.min(...food),emptyGaugeObserved:food.includes(0),laterMeal:meal?{episodeId:meal.id,delayMs:meal.record.endedAt-e.record.endedAt}:null,healthLossObserved:sequence.reduce((sum,n)=>sum+Math.max(0,-n.record.changes.health),0),status:later.length?'followup_observed':'pending' as string,note:'No fixed eating threshold or causal starvation claim. Missing later meal is not proof none occurred; window is bounded and may omit observations.'};
+ });
+}

@@ -511,6 +511,7 @@ export class MineflayerWorld implements World {
       dimension:String(this.bot.game?.dimension??'unknown'),environment:{inWater:!!(this.bot.entity as any)?.isInWater,inLava:!!(this.bot.entity as any)?.isInLava,onGround:!!this.bot.entity?.onGround,oxygen:(this.bot as any).oxygenLevel},lifecycle:{generation:this.generation,deathCount:this.deathCount,phase:this.dead?'dead':this.ready?'alive':'connecting',lastDeath:this.recovery.context().deaths.at(-1)},recovery:this.recovery.context(),
       ready: this.ready, health: this.bot.health ?? 0, food: this.bot.food ?? 0, logs,
       canMine: this.ready && this.visible.some(b=>!['bedrock','water','lava','air'].includes(b.name)), canDeposit: this.ready && this.bot.inventory.items().length>0 && this.visible.some(b=>['chest','furnace','blast_furnace','smoker'].includes(b.name)),
+      foodAvailable: this.ready && !!this.food(),
       canEat: this.ready && (this.bot.food ?? 20) < 20 && !!this.food(),
       canFollow: this.ready && !!this.bot.players[this.c.follow]?.entity && this.entityVisible(this.bot.players[this.c.follow].entity!),
       position: { x: position.x, y: position.y, z: position.z }, chatEvents:structuredClone(this.chatEvents),messages: [...this.messages], recipeBook: this.recipeBook.snapshot() };

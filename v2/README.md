@@ -75,3 +75,5 @@ runs 전체는 비공개입니다. 자율 목표는 `goals.json`에 저장하고
 [현재 범위](docs/READINESS.md) · [명세](docs/SPEC.md) · [인수인계](docs/HANDOFF.md)
 
 다음 TODO: [관측 기반 JEV 대상 선택](docs/TARGET_SELECTION.md). 작은 API 검증은 완료했으나 기본 런타임은 기존 후보 정책을 유지한다. 후보 범위 확대와 자기보호 우선순위를 검증한 뒤 실제 서버 비교가 필요하다.
+
+현재 기본값은 TARGET_POLICY=observed: LLM은 큰 작업 의도, JEV는 관측된 채굴·이동 대상을 고릅니다. TARGET_POLICY=planner는 이전 정책 비교/복귀용입니다. [현재 명세와 실제 비교](docs/WORK_INTENTS.md). 304개 모의검증·타입 검사 통과. 반복 설치와 실제 기억 학습 효과는 남은 과제입니다.

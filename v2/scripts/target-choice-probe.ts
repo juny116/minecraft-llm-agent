@@ -16,7 +16,7 @@ const cases=[
 {name:'dirt',goal:'Gather dirt as temporary construction material.',expected:'mine:dirt'},
 {name:'east',goal:'Rendezvous with Alice at her observed position.',expected:'move:8',peer:8},
 {name:'west',goal:'Rendezvous with Alice at her observed position.',expected:'move:-8',peer:-8},
-{name:'hunger',goal:'Gather wood for basic supplies.',expected:'eat',food:5}
+{name:'hunger',goal:'Gather wood for basic supplies.',expected:null,food:5}
 ];
 const ledger=new FunctionalLedger('runs/functional-cost-ledger.json',18,.10,15),brain=new ApiBrain(c,ledger.budget),rows:any[]=[];
 try{
@@ -36,7 +36,7 @@ const started=Date.now();
 const answer=await brain.supervise(state,{options:ordered,execution:null,inbox:[],goal:t.goal},AbortSignal.timeout(30000));
 const selected=ordered.find(o=>o.id===answer.choice);
 const key=selected?.action==='mine'?'mine:'+selected.plan.mine!.expected:selected?.action==='move'?'move:'+selected.plan.destination!.x:selected?.action??answer.choice;
-rows.push({case:t.name,round,expected:t.expected,selected:key,pass:key===t.expected,ms:Date.now()-started,confidence:answer.confidence,legacyMineChoices:executionOptions(state,base).filter(o=>o.action==='mine').length});
+rows.push({case:t.name,round,expected:t.expected,selected:key,pass:t.expected===null?null:key===t.expected,evaluation:t.expected===null?'Choice only; subsequent outcome required, no fixed eating threshold':'target matching',ms:Date.now()-started,confidence:answer.confidence,legacyMineChoices:executionOptions(state,base).filter(o=>o.action==='mine').length});
 }
 }finally{
 const cost=ledger.finish();const report={scope:'Synthetic API decision probe only; no game connection or LLM calls. Six hand-authored cases, three orderings each. Not an autonomous gameplay benchmark.',model:c.jevModel,rows,cost};

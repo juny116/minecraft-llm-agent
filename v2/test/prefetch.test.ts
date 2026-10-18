@@ -32,7 +32,7 @@ test('prefetch has its own bounded schedule and does not add an empty-candidate 
 });
 test('planner prompt asks for grounded multi-step continuation, without fabricated future observations',async()=>{
  const f=fixture();f.r.refreshMedium(f.w.snapshot(),Date.now());let request:any;
- const api=new ApiBrain({...config(),llmKey:'test'},new Budget(1,1),async(_u,init)=>{request=JSON.parse(init!.body as string);return Response.json({choices:[{message:{content:JSON.stringify(next)}}],usage:{prompt_tokens:100,completion_tokens:100}});});
+ const api=new ApiBrain({...config(),targetPolicy:'planner',llmKey:'test'},new Budget(1,1),async(_u,init)=>{request=JSON.parse(init!.body as string);return Response.json({choices:[{message:{content:JSON.stringify(next)}}],usage:{prompt_tokens:100,completion_tokens:100}});});
  await api.plan(f.w.snapshot(),[],new AbortController().signal,null,f.context);assert.match(request.messages[0].content,/3-5 step/);const input=JSON.parse(request.messages.at(-1).content);assert.equal(input.planning.mediumRequest.mode,'append');assert.equal(input.planning.mediumRequest.remainingSteps.length,2);f.reply();await delay(0);f.r.close();
 });
 

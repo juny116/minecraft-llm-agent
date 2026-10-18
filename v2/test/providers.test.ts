@@ -55,7 +55,7 @@ test('empty steps is a valid waiting plan rather than a retry loop',()=>{const p
 
 test('contextual planner accepts waiting without steps but requires steps for work',async()=>{
  let result:any={longTermGoal:'Wait for further cooperation',goal:'Waiting',preferred:'idle',steps:[]};
- const brain=new ApiBrain(c(),new Budget(5,2),(async()=>Response.json({choices:[{message:{content:JSON.stringify(result)}}],usage:{prompt_tokens:100,completion_tokens:20}})) as typeof fetch);
+ const brain=new ApiBrain({...c(),targetPolicy:'planner'},new Budget(5,2),(async()=>Response.json({choices:[{message:{content:JSON.stringify(result)}}],usage:{prompt_tokens:100,completion_tokens:20}})) as typeof fetch);
  const context:any={longTermGoal:'Wait',mediumTerm:{summary:'Wait',steps:[],activeStep:0},replanReasons:[],recentActions:[],olderSummary:{count:0,byAction:{},inventoryNet:{},healthNet:0},failureStreak:0};
  assert.deepEqual((await brain.plan(new MockWorld().snapshot(),[],signal(),null,context)).steps,[]);
  delete result.steps;assert.equal((await brain.plan(new MockWorld().snapshot(),[],signal(),null,context)).preferred,'idle');

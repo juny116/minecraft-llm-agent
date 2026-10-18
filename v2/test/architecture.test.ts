@@ -48,7 +48,7 @@ test('pilot permits bounded respawn, but still enforces time, budget and repeate
 });
 test('supervisor API sends semantic alias routing in the same request as execution control',async()=>{
  const social=new SocialMemory('Alice');social.ingest([{id:'m',speaker:'Bob',text:'엘리스야, 잠깐 도와줘',at:1}]);const w=new MockWorld();w.state.social=social.context();let calls=0;
- const b=new ApiBrain({...config(),mode:'jev',jevKey:'test',llmKey:'test'},new Budget(2,1),(async(_url:any,init:any)=>{calls++;const req=JSON.parse(init.body);assert.ok(req.questions.message_0);assert.match(req.questions.message_0.instructions,/NOT exact-name/);assert.equal(req.state.inbox[0].text,'엘리스야, 잠깐 도와줘');return Response.json({answers:{continuity:{type:'choice',choice:'maintain',confidence:.8},action:{type:'choice',choice:'continue',confidence:.8},review:{type:'choice',choice:'none',confidence:1},message_0:{type:'choice',choice:'clarify',confidence:.5}},usage:{input_tokens:100,output_tokens:0}});}) as typeof fetch);
+ const b=new ApiBrain({...config(),targetPolicy:'planner',mode:'jev',jevKey:'test',llmKey:'test'},new Budget(2,1),(async(_url:any,init:any)=>{calls++;const req=JSON.parse(init.body);assert.ok(req.questions.message_0);assert.match(req.questions.message_0.instructions,/NOT exact-name/);assert.equal(req.state.inbox[0].text,'엘리스야, 잠깐 도와줘');return Response.json({answers:{continuity:{type:'choice',choice:'maintain',confidence:.8},action:{type:'choice',choice:'continue',confidence:.8},review:{type:'choice',choice:'none',confidence:1},message_0:{type:'choice',choice:'clarify',confidence:.5}},usage:{input_tokens:100,output_tokens:0}});}) as typeof fetch);
  const input:SupervisorInput={options:[],execution:{id:1,action:'mine',plan:{goal:'wood',preferred:'mine'},elapsedMs:2000},inbox:social.pendingRouting(),goal:'wood'};const d=await b.supervise(w.snapshot(),input,new AbortController().signal);assert.equal(d.routes.m,'clarify');assert.equal(d.choice,'continue');assert.equal(calls,1);
 });
 
@@ -63,7 +63,7 @@ test('alias metadata alone never bypasses semantic routing or marks a message an
 });
 test('long review and medium planning API inputs are separate contracts',async()=>{
  const w=new MockWorld(),g=new GoalBook();const context:any={goalState:g.snapshot(),goalReview:g.review(w.snapshot(),null),longTermGoal:null,mediumTerm:{summary:'review',steps:[],activeStep:0},recentActions:[],olderSummary:{count:0,byAction:{},inventoryNet:{},healthNet:0},replanReasons:[],failureStreak:0};let scope='long';
- const b=new ApiBrain({...config(),mode:'jev',llmKey:'test'},new Budget(3,1),(async(_u:any,init:any)=>{const request=JSON.parse(init.body),data=JSON.parse(request.messages[1].content);if(scope==='long'){assert.match(request.messages[0].content,/NOT immediate actions/);assert.ok(data.goalReview);return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[],activeGoalId:null})}}],usage:{prompt_tokens:10,completion_tokens:10}});}assert.match(data.planningScope,/medium_only/);assert.equal(data.planning.goalReview,undefined);return Response.json({choices:[{message:{content:JSON.stringify({goal:'Observe',preferred:'idle',steps:[]})}}],usage:{prompt_tokens:10,completion_tokens:10}});}) as typeof fetch);
+ const b=new ApiBrain({...config(),targetPolicy:'planner',mode:'jev',llmKey:'test'},new Budget(3,1),(async(_u:any,init:any)=>{const request=JSON.parse(init.body),data=JSON.parse(request.messages[1].content);if(scope==='long'){assert.match(request.messages[0].content,/NOT immediate actions/);assert.ok(data.goalReview);return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[],activeGoalId:null})}}],usage:{prompt_tokens:10,completion_tokens:10}});}assert.match(data.planningScope,/medium_only/);assert.equal(data.planning.goalReview,undefined);return Response.json({choices:[{message:{content:JSON.stringify({goal:'Observe',preferred:'idle',steps:[]})}}],usage:{prompt_tokens:10,completion_tokens:10}});}) as typeof fetch);
  await b.reviewGoals(w.snapshot(),context,new AbortController().signal);scope='medium';delete context.goalReview;await b.plan(w.snapshot(),[],new AbortController().signal,null,context);
 });
 
@@ -103,7 +103,7 @@ test('wait during mining retains the executor, explicit stop remains available',
 });
 
 test('binary continuity preserves work even when another option scores well, and permits deliberate stop',async()=>{
- let keep=true;const w=new MockWorld();const b=new ApiBrain({...config(),mode:'jev',jevKey:'test'},new Budget(4,1),(async(_u:any,init:any)=>{
+ let keep=true;const w=new MockWorld();const b=new ApiBrain({...config(),targetPolicy:'planner',mode:'jev',jevKey:'test'},new Budget(4,1),(async(_u:any,init:any)=>{
  const req=JSON.parse(init.body);assert.ok(req.questions.continuity);return Response.json({answers:{continuity:{type:'choice',choice:keep?'maintain':'interrupt',confidence:.01},action:{type:'choice',choice:'stop',confidence:.9},review:{type:'choice',choice:'none',confidence:1}},usage:{input_tokens:10,output_tokens:1}});
  }) as typeof fetch);
  const input:SupervisorInput={options:[],execution:{id:1,action:'mine',plan:{goal:'Wood',preferred:'mine'},elapsedMs:1000},inbox:[],goal:'Wood'};

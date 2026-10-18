@@ -61,8 +61,8 @@ test('bounded journal preserves failures and net changes in older summary',()=>{
 test('planner payload includes structured evidence and validates measurable steps',async()=>{
  const f=setup();await prime(f.runtime);await f.runtime.tick();const ctx=f.runtime.planning;
  const transport=(async(_u:any,init:any)=>{const body=JSON.parse(init.body);const payload=JSON.parse(body.messages[1].content);
- assert.deepEqual(payload.planning,ctx);return Response.json({choices:[{message:{content:JSON.stringify(stepPlan)}}],usage:{prompt_tokens:1,completion_tokens:1}});}) as typeof fetch;
- const brain=new ApiBrain({...config(),llmKey:'fake'},new Budget(1,1),transport);
+ assert.deepEqual(payload.planning,JSON.parse(JSON.stringify(ctx)));return Response.json({choices:[{message:{content:JSON.stringify(stepPlan)}}],usage:{prompt_tokens:1,completion_tokens:1}});}) as typeof fetch;
+ const brain=new ApiBrain({...config(),targetPolicy:'planner',llmKey:'fake'},new Budget(1,1),transport);
  const result=await brain.plan(f.world.snapshot(),[],new AbortController().signal,null,ctx);assert.equal(result.steps?.[0].id,'wood');
  assert.throws(()=>parsePlan({...stepPlan,steps:[{...stepPlan.steps![0],completion:{kind:'monster_dead'}}]}));
  assert.throws(()=>parsePlan({...stepPlan,steps:[stepPlan.steps![0],stepPlan.steps![0]]}));f.runtime.close();

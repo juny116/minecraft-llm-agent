@@ -34,7 +34,7 @@ const log=(bot:string,event:string,data:Record<string,unknown>={})=>{
 budget.onDiagnostic=data=>log('api','api_request',data);
 const interrupt=()=>{reason='operator_stop';};process.once('SIGINT',interrupt);process.once('SIGTERM',interrupt);
 try{
- writeFileSync(join(dir,'config.json'),JSON.stringify({source,mode:'live-functional',agentTrack:'A',goalInterface:'evidence-goals-v1',names:c.names,llmModel:c.llmModel,jevModel:c.jevModel,runtimeMs,maxCalls:budget.maxCalls,maxRunUsd:budget.maxUsd}),{mode:0o600});
+ writeFileSync(join(dir,'config.json'),JSON.stringify({source,mode:'live-functional',targetPolicy:c.targetPolicy,agentTrack:'A',goalInterface:'evidence-goals-v1',names:c.names,llmModel:c.llmModel,jevModel:c.jevModel,runtimeMs,maxCalls:budget.maxCalls,maxRunUsd:budget.maxUsd}),{mode:0o600});
  for(const name of c.names){const w=new MineflayerWorld(name,c,(e,f)=>log(name,e,f));worlds.push(w);const location=botMemoryLocation('--live',name,c);runtimes.push(new Runtime(w,brain,{selectorMs:c.tickMs,longPlanMs:c.longPlanMs,reflectionMs:c.reflectionMs,socialMs:c.socialMs,recovery:new RecoveryMemory(join(location.dir,'recovery.json')),planMs:c.planMs,actionMs:c.actionMs,minConfidence:c.minConfidence,selectorKind:'jev',goals:new GoalBook(join(location.dir,'goals.json'),location.profile),memory:openBotMemory('--live',name,c),social:new SocialMemory(name,join(location.dir,'social.json'))},(e,f)=>log(name,e,f)));}
  const connecting=Date.now();while(!reason&&!worlds.every(w=>w.snapshot().ready)&&Date.now()-connecting<20000)await delay(100);
  if(!worlds.every(w=>w.snapshot().ready))reason||='spawn_timeout';
@@ -53,7 +53,7 @@ try{
 }catch{reason='startup_or_runtime_error';process.exitCode=1;}
 finally{
  if(activityTimer)clearInterval(activityTimer);log('run','stopped',{reason});
- for(let i=0;i<worlds.length;i++)log(c.names[i],'final_observation',{observation:compact(worlds[i].snapshot())});
+ for(let i=0;i<worlds.length;i++){try{log(c.names[i],'final_observation',{observation:compact(worlds[i].snapshot())});}catch{log(c.names[i],'final_observation_unavailable');}}
  for(const r of runtimes)r.close(true);for(const w of worlds)if(!runtimes.some(r=>r.world===w))w.close();
  // Disconnect immediately but drain already-dispatched model responses for usage accounting; late plans cannot execute.
  await Promise.race([Promise.allSettled([...pending]),delay(c.apiMs+1000)]);

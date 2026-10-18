@@ -3,7 +3,8 @@ import {reachedCell} from './reach.js';
 import {compatible} from './equipment.js';
 export type Action = 'idle' | 'mine' | 'deposit' | 'eat' | 'follow' | 'move' | 'craft' | 'look' | 'attack' | 'flee' | 'place_table' | 'inspect_container' | 'withdraw' | 'give' | 'place_block' | 'pickup' | 'equip';
 export type Interaction = {equip?:import('./equipment.js').EquipRequest;pickup?:import('./pickup.js').PickupRequest;build?:import('./building.js').BuildRequest;mine?:import('./building.js').DigRequest;container?: {x:number;y:number;z:number}; transfer?: {item:string;count:number;recipient?:string;slot?:'input'|'fuel'|'output'}};
-export type Plan = Interaction & { userRequest?:string|null; goalUpdates?:import('./goals.js').GoalDraft[]; activeGoalId?:string|null; speech?:import('./social.js').Speech; activeStepId?: string; longTermGoal?: string; goalRevisionReason?: string; steps?: import('./planning.js').Step[]; goal: string; preferred: Action; say?: string; destination?: { x: number; y: number; z: number }; craft?: { item: string; count: number }; look?: { yaw: number; pitch: number } };
+export type WorkIntent={description:string;desiredInventory:{item:string;count:number}[];constraints:string[]};
+export type Plan = Interaction & {intent?:WorkIntent;proposals?:Plan[]; userRequest?:string|null; goalUpdates?:import('./goals.js').GoalDraft[]; activeGoalId?:string|null; speech?:import('./social.js').Speech; activeStepId?: string; longTermGoal?: string; goalRevisionReason?: string; steps?: import('./planning.js').Step[]; goal: string; preferred: Action; say?: string; destination?: { x: number; y: number; z: number }; craft?: { item: string; count: number }; look?: { yaw: number; pitch: number } };
 export type DecisionPlan = Omit<Plan,'preferred'> & {preferred?:Action;recentOutcome?:{action:Action;outcome:import('./planning.js').Outcome;result:string;changes:ReturnType<typeof import('./planning.js').changes>}};
 export type Snapshot = {
   // Motor validation only; never sent to model prompts.
@@ -30,7 +31,7 @@ export type Snapshot = {
   places?: import('./vision.js').SeenBlock[];
   craftable?: string[];
   ready: boolean; health: number; food: number; logs: number;
-  canMine: boolean; canDeposit: boolean; canEat: boolean; canFollow: boolean;
+  canMine: boolean; canDeposit: boolean; foodAvailable?:boolean; canEat: boolean; canFollow: boolean;
   position: { x: number; y: number; z: number };
   messages: string[];
   recipeBook: { initialized: boolean; unlocked: string[] };

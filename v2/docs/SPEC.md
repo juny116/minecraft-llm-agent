@@ -26,3 +26,6 @@ LLM은 장기 목표·중기 단계를 갱신하고, JEV는 즉시 실행할 스
 
 ## 독립 제어 루프
 현재 실행 계약은 [CONTROL_LOOP.md](CONTROL_LOOP.md)를 따릅니다. JEV는 실행 중에도 선택하며 LLM 계획은 직접 액션을 시작하지 않습니다. 목표와 중기 계획은 별도 모델 호출이고, 대화의 수신자/별명은 의미 기반 분류와 근거 있는 기억으로 처리합니다. 사망 기록은 현재 위험/드롭 존재를 보장하지 않습니다.
+
+## 중기 의도 정책
+기본 TARGET_POLICY=observed에서는 work-intent의 description/desiredInventory/constraints를 사용하고 순차 mine/move 파라미터 계획을 요청하지 않는다. JEV 후보와 기억/평가 계약은 WORK_INTENTS.md가 최신 기준이다. 이전 단계 계획/후속 보충은 planner 비교 정책에서 유지한다.

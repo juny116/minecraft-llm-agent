@@ -15,6 +15,7 @@ export function config() {
   if (!['offline', 'microsoft'].includes(auth)) throw new Error('Invalid MC_AUTH');
   return {
     names, mode: mode as 'jev' | 'llm' | 'rules',
+    targetPolicy:process.env.TARGET_POLICY==='planner'?'planner' as const:'observed' as const,
     host: process.env.MC_HOST ?? '127.0.0.1', port: number('MC_PORT', 25565, 1),
     version: process.env.MC_VERSION ?? '1.21.1', auth: auth as 'offline' | 'microsoft',
     follow: process.env.FOLLOW_PLAYER ?? '',

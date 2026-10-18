@@ -1,3 +1,4 @@
+import {summarizeActivity} from './activity-metrics.js';
 // Aggregate functional evidence without publishing raw dialogue, coordinates,
 // goals, player names, endpoints or memory contents.
 export type PilotEvent={at:number;bot:string;event:string;data:Record<string,any>};
@@ -14,7 +15,7 @@ export function summarizePilot(events:PilotEvent[]){
   }
   const initial=rows.find(e=>e.event==='initial_observation'),final=[...rows].reverse().find(e=>e.event==='final_observation');
   const health=records.flatMap(r=>[r.before.health,r.after.health]);
-  return {agent:`agent_${index+1}`,durationSeconds:initial&&final?(final.at-initial.at)/1000:null,actions,
+  return {activity:summarizeActivity(events,name),agent:`agent_${index+1}`,durationSeconds:initial&&final?(final.at-initial.at)/1000:null,actions,
    substantiveSuccesses:records.filter(r=>r.outcome==='succeeded'&&!['look','idle'].includes(r.decision.action)&&!noOpMove(r)).length,
    noOpMoves:records.filter(noOpMove).length,
    positiveInventoryDeltas:acquired,blocksBroken:broken,actionDisplacement:Math.round(travel*100)/100,

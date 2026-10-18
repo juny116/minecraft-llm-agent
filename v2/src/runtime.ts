@@ -1,3 +1,4 @@
+import {intentSatisfied} from './work-intent.js';
 import {ProgressTracker} from './progress.js';
 import {completionBoundary,executionOptions,executionIdentity,type SupervisorInput} from './supervision.js';
 import {RecoveryMemory} from './recovery.js';
@@ -56,7 +57,7 @@ export class Runtime {
  private lifetime=new AbortController();
  private actionController?:AbortController;
  constructor(readonly world:World,private brain:Brain,private options:RuntimeOptions,private log:Log){if(brain.supervise){options.goals??=new GoalBook();options.recovery??=new RecoveryMemory();}}
- private observation(){const s=this.world.snapshot();if(this.options.recovery)s.recovery=this.options.recovery.context();if(this.options.memory)s.memoryGuidance=this.options.memory.retrieve(s);if(this.options.social){this.options.social.ingest(s.chatEvents??[]);s.social=this.options.social.context();}return s;}
+ private observation(){const s=this.world.snapshot();if(this.options.recovery)s.recovery=this.options.recovery.context();if(this.options.memory)s.memoryGuidance=this.options.memory.retrieve(s,[this.activeAction,this.plan.preferred,...(this.plan.intent?['mine','move','craft'] as Action[]:[])].filter((x):x is Action=>!!x));if(this.options.social){this.options.social.ingest(s.chatEvents??[]);s.social=this.options.social.context();}return s;}
  private async converse(s:Snapshot,now:number){
   const social=this.options.social;if(!social||!this.brain.communicate||this.socialPending||this.closed||now-this.lastSocial<8000||s.enemies?.length||!s.ready)return;
   const context=s.social??social.context();
@@ -80,7 +81,7 @@ export class Runtime {
   }catch(error){this.reflectionFeedback=error instanceof Error&&/^(Invalid |Unseen |Cannot |Stale |Duplicate )/.test(error.message)?error.message.slice(0,240):'Memory review failed';this.log('memory_reflection_error',{reason:this.reflectionFeedback});}finally{this.reflectionPending=false;}
  }
  get userGoal(){return this.assignedGoal;}
- get planning():PlanningContext {return structuredClone({progress:this.progress.context(Date.now()),...(this.longPlannerFeedback?{longPlannerFeedback:this.longPlannerFeedback}:{}),blockedInteractions:this.retries.context(),observationStreak:this.observationStreak,...(this.plannerFeedback?{plannerFeedback:this.plannerFeedback}:{}),userRequest:this.assignedGoal,...(this.options.goals?{goalState:this.options.goals.snapshot()}:{}),longTermGoal:this.longGoal,mediumTerm:this.medium,replanReasons:[...this.reasons],recentActions:this.journal.recent,olderSummary:this.journal.older,failureStreak:this.failureStreak});}
+ get planning():PlanningContext {return structuredClone({...(this.plan.intent?{workIntent:this.plan.intent}:{}),progress:this.progress.context(Date.now()),...(this.longPlannerFeedback?{longPlannerFeedback:this.longPlannerFeedback}:{}),blockedInteractions:this.retries.context(),observationStreak:this.observationStreak,...(this.plannerFeedback?{plannerFeedback:this.plannerFeedback}:{}),userRequest:this.assignedGoal,...(this.options.goals?{goalState:this.options.goals.snapshot()}:{}),longTermGoal:this.longGoal,mediumTerm:this.medium,replanReasons:[...this.reasons],recentActions:this.journal.recent,olderSummary:this.journal.older,failureStreak:this.failureStreak});}
  setGoal(goal:string|null){
   if(this.closed)return;const next=goal?.trim()||null;if(next===this.assignedGoal)return;
   this.assignedGoal=next;this.longGeneration++;this.longValidationFailures=0;this.longPlannerFeedback=undefined;this.progress.reset();this.longRequested=true;this.longRetryAt=0;this.supervisorUrgent=true;this.options.goals?.pause('operator request changed; re-evaluate intention');this.longGoal=this.options.goals?null:next;this.medium={summary:'Observe and replan',steps:[],activeStep:0};
@@ -94,7 +95,10 @@ export class Runtime {
   const step=this.medium.steps[this.medium.activeStep];
   this.plan={...this.plan,activeStepId:step?.id,preferred:step?.action??'idle',destination:step?.destination,craft:step?.craft,look:step?.look,container:step?.container,transfer:step?.transfer,build:step?.build,mine:step?.mine,pickup:step?.pickup,equip:step?.equip};
  }
+ private completedIntentVersion=-1;
  private checkStep(s:Snapshot,successfulAction?:Action){
+  if(this.plan.intent&&intentSatisfied(this.plan.intent,s)&&this.completedIntentVersion!==this.planVersion){this.completedIntentVersion=this.planVersion;this.requestPlan('intent_inventory_satisfied_review_next_work');this.longRequested=true;this.log('intent_satisfied',{intent:this.plan.intent,evidence:compact(s)});}
+
   const step=this.medium.steps[this.medium.activeStep];
   if(!step||!completed(step,s,successfulAction))return;
   this.log('step_completed',{id:step.id,completion:step.completion,evidence:compact(s)});
@@ -193,10 +197,10 @@ export class Runtime {
   }catch{if(!this.closed)this.log('decision_error');}
   finally{this.decisionPending=false;}
  }
- private record(decision:Decision,options:Action[],source:'selector'|'local_safety',version:number,context:PlanningContext,before:Snapshot,after:Snapshot,outcome:Outcome,result:string,startedAt:number,decisionObserved:Snapshot=before){
+ private record(decision:Decision,options:Action[],source:'selector'|'local_safety',version:number,context:PlanningContext,before:Snapshot,after:Snapshot,outcome:Outcome,result:string,startedAt:number,decisionObserved:Snapshot=before,executionPlan?:Plan){
   const a=compact(before),b=compact(after);
   const unlocked=after.recipeBook.unlocked.filter(id=>!before.recipeBook.unlocked.includes(id));
-  const record=this.journal.add({...(decision.action==='pickup'&&readPickupResult(result)?{pickup:readPickupResult(result)}:{}),...(decision.action==='mine'&&readMiningResult(result)?{mining:readMiningResult(result)}:{}),decision,decisionObserved:compact(decisionObserved),selectorKind:source==='local_safety'?'local_rule':this.options.selectorKind??'unspecified_selector',options,source,planVersion:version,goal:context.longTermGoal,stepId:context.mediumTerm.steps[context.mediumTerm.activeStep]?.id??null,before:a,after:b,changes:{...changes(a,b),newlyUnlocked:unlocked.slice(0,128),newlyUnlockedCount:unlocked.length},outcome,result,startedAt,endedAt:Date.now()});
+  const record=this.journal.add({...(executionPlan?{executionPlan:structuredClone(executionPlan)}:{}),...(decision.action==='pickup'&&readPickupResult(result)?{pickup:readPickupResult(result)}:{}),...(decision.action==='mine'&&readMiningResult(result)?{mining:readMiningResult(result)}:{}),decision,decisionObserved:compact(decisionObserved),selectorKind:source==='local_safety'?'local_rule':this.options.selectorKind??'unspecified_selector',options,source,planVersion:version,goal:context.longTermGoal,stepId:context.mediumTerm.steps[context.mediumTerm.activeStep]?.id??null,before:a,after:b,changes:{...changes(a,b),newlyUnlocked:unlocked.slice(0,128),newlyUnlockedCount:unlocked.length},outcome,result,startedAt,endedAt:Date.now()});
   if(outcome!=='skipped'&&(!(decision.action==='idle'||decision.action==='look')||JSON.stringify(a)!==JSON.stringify(b)))this.evidenceVersion++;
   try{this.options.goals?.record(record);}catch{this.log('goal_evidence_write_error');}
   try{this.options.memory?.add(record,(decisionObserved.memoryGuidance??[]).map(g=>({id:g.id,version:g.version})));}catch{this.log('memory_write_error');}
@@ -222,8 +226,8 @@ export class Runtime {
     this.observationStreak=novel?0:this.observationStreak+1;if(this.observationStreak===4||this.observationStreak%20===0)this.requestPlan('repeated_observation_without_new_information_choose_meaningful_action');
     if(this.knownViews.size>4096)this.knownViews.clear();
    }else if(outcome==='succeeded'&&action!=='idle')this.observationStreak=0;
-   this.record(decision,options,source,version,context,before,after,outcome,result,startedAt,observed??before);this.note(result);
-   if(version===this.planVersion&&!this.closed&&(!executionPlan||JSON.stringify(executionPlan)===JSON.stringify(this.plan))){
+   this.record(decision,options,source,version,context,before,after,outcome,result,startedAt,observed??before,plan);this.note(result);
+   if(version===this.planVersion&&!this.closed&&(!executionPlan||!!this.plan.intent&&JSON.stringify(executionPlan.intent)===JSON.stringify(this.plan.intent)||JSON.stringify(executionPlan)===JSON.stringify(this.plan))){
     const key=JSON.stringify({action,step:context.mediumTerm.steps[context.mediumTerm.activeStep]?.id,craft:plan.craft,destination:plan.destination,container:plan.container,transfer:plan.transfer,build:plan.build,mine:plan.mine,pickup:plan.pickup,equip:plan.equip});
     if(action==='give'&&outcome==='partial')this.requestPlan('delivery_receipt_unconfirmed_do_not_repeat');
     if(outcome==='failed'||outcome==='partial'){
@@ -395,7 +399,7 @@ export class Runtime {
    if(this.closed||life!==this.longGeneration||!candidates(this.world.snapshot(),selected.plan).includes(selected.action))return;
    this.lastSelection={action:selected.action,at:Date.now()};this.log('decision',{action:selected.action,confidence:d.confidence,control:'start_or_switch'});
    this.executionId++;this.executionIntention=this.longGoal;this.executionStarted=Date.now();this.executionPlan=structuredClone(selected.plan);this.executionObserved=structuredClone(fresh);
-   this.executionTask=this.run({action:selected.action,confidence:d.confidence},options.map(o=>o.action),'selector',fresh,selected.plan);
+   this.executionTask=this.run({action:selected.action,confidence:d.confidence},options.map(o=>o.action),'selector',s,selected.plan);
    void this.executionTask.catch(()=>this.log('execution_error'));
   }catch{if(!this.closed)this.log('decision_error');}finally{this.decisionPending=false;}
  }
