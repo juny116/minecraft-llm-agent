@@ -59,7 +59,7 @@ export async function selectValue<T>(name:string,values:T[],ask:Ask,context:Reco
 }
 export function cameraSemantics(s:Pick<Snapshot,'vision'>){return {
  yawDegrees:'Absolute camera heading in degrees: 0 north (-z), 90 west (-x), 180 south (+z), 270 east (+x). Full circle is 360. These values rotate the camera; they are not block IDs or observed objects.',
- pitchDegrees:'Absolute camera elevation in degrees: -90 down, 0 horizontal, 90 up.',
+ pitchDegrees:'Absolute camera elevation in degrees: -90 down, 0 horizontal, 90 up. Execution applies this pitch together with boundArguments.yawDegrees; keeping pitch horizontal does not cancel a yaw change.',
  currentCameraDegrees:s.vision?{yaw:((s.vision.yaw*180/Math.PI)%360+360)%360,pitch:s.vision.pitch*180/Math.PI}:null
 };}
 export async function parameterSupervise(s:Snapshot,input:SupervisorInput,ask:Ask,contract:'legacy'|'explicit'|'coordinated'='legacy'):Promise<Supervision>{

@@ -108,3 +108,18 @@ test('runtime provider separates withdrawal while preserving coordinated review 
   else {assert.equal(d.selected?.action,'move');assert.deepEqual(d.selected?.plan.destination,{x:5,y:64,z:0});assert.equal(calls.length,3);}
  }
 });
+
+import {directSelection} from '../src/direct-selection.js';
+test('direct selection applies the same no-extra-approval contract to all 17 actions',async()=>{
+ for(const action of ['mine','move','craft','place_block','place_table','pickup','equip','eat','follow','attack','flee','look','give','inspect_container','deposit','withdraw','wait']){
+  const calls:any[]=[];const result=await parameterSupervise(fixture(),input,directSelection(responder(action,{},calls)));
+  assert.equal(result.selected?.action,action==='wait'?'idle':action);
+  for(const call of calls)if(call.context.argumentName){assert.equal(call.questions.bindingDecision,undefined);for(const q of Object.values(call.questions)as any[]){assert.equal(q.criteria.none,undefined);assert.equal(q.criteria.revise,undefined);}}
+ }
+});
+test('direct choice does not invent missing targets, accept withdrawal, or replace model angles',async()=>{
+ const s=fixture();s.placementSites=[];const missing=await parameterSupervise(s,input,directSelection(responder('place_block')));assert.equal(missing.choice,'unresolved');assert.equal(missing.selected,undefined);
+ await assert.rejects(directSelection(async()=>({x:{type:'choice',choice:'none',confidence:1}}))({x:{type:'choice',instructions:'',criteria:{none:'withdraw',value_0:'0'}}},{argumentName:'x'}),/Invalid direct/);
+ const calls:any[]=[];const d=await parameterSupervise(fixture(),input,directSelection(async(q,c)=>{calls.push({q,c});return Object.fromEntries(Object.keys(q).map(k=>[k,{type:'choice',confidence:.01,choice:k==='action'?'look':k==='review'?'none':k==='yawDegrees'?(q[k].criteria.group_2?'group_2':'value_90'):'value_90'}]));}),'coordinated');
+ assert.deepEqual(d.selected?.plan.look,{yaw:Math.PI/2,pitch:0});assert.equal(calls.length,4);assert.equal(calls.at(-1).c.boundArguments.yawDegrees,90);assert.match(calls.at(-1).c.argumentSemantics.pitchDegrees,/together/);
+});

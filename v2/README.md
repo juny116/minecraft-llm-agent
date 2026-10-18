@@ -46,7 +46,7 @@ Ctrl-C로 종료합니다. 목표는 선택 사항이며 `.env` 대신 실행 �
 
 ## 선택 방식과 기록
 
-기본 `TARGET_POLICY=observed`에서는 LLM이 작업 의도를 주고 JEV가 대상을 고릅니다. `planner`는 이전 정책과의 비교용입니다. `JEV_ARGUMENT_CONTRACT`의 기본값은 `legacy`, `JEV_WITHDRAWAL_MODE`는 `joint`입니다. `coordinated`, `separate`, `proposal` 등 비교 설정이 있으며 최신 검증 결과가 기본 설정 전체에 적용되는 것은 아닙니다. [구조](docs/ARCHITECTURE.md) · [검증 현황](docs/VALIDATION.md)
+기본 `TARGET_POLICY=observed`에서는 LLM이 작업 의도를 주고 JEV가 대상을 고릅니다. `planner`는 이전 정책과의 비교용입니다. `JEV_ARGUMENT_CONTRACT`의 기본값은 `legacy`, `JEV_WITHDRAWAL_MODE`는 `direct`입니다. `direct`는 모든 액션에서 인자 선택 후 추가 승인 없이 실행을 시도하며 최신 상태 검사는 유지합니다. `coordinated`, `joint`, `separate`, `proposal` 등 비교 설정이 있으며 최신 검증 결과가 기본 설정 전체에 적용되는 것은 아닙니다. [구조](docs/ARCHITECTURE.md) · [검증 현황](docs/VALIDATION.md)
 
 `runs/`에는 이벤트·종료 요약과 봇별 기억이 저장됩니다. 월드를 초기화하면 기억 namespace를 분리하세요. 기억한 목표는 재접속 후 현재 관측으로 재검토합니다.
 
