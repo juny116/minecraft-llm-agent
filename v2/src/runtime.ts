@@ -5,7 +5,7 @@ import {intentSatisfied} from './work-intent.js';
 import {ProgressTracker} from './progress.js';
 import {completionBoundary,executionOptions,executionIdentity,type SupervisorInput} from './supervision.js';
 import {RecoveryMemory} from './recovery.js';
-import {reachedCell} from './reach.js';
+import {moveReached} from './action-contracts.js';
 import {supportsFeet} from './building.js';
 import {RetryPolicy} from './retry-policy.js';
 import {GoalBook} from './goals.js';
@@ -131,7 +131,7 @@ export class Runtime {
    }
    const first=p.steps?.[0],next={...p,...first,preferred:first?.action??p.preferred};let firstProblem:string|undefined;
    if(next.preferred!=='idle'&&!candidates(s,next).includes(next.preferred)){
-    const why=next.preferred==='move'&&next.destination&&reachedCell(s.position,next.destination,2)?'destination already reached (block-cell radius 2); choose the next useful action':next.preferred==='mine'&&next.mine&&supportsFeet(next.mine.position,s.position)?'target supports own feet; reposition before mining':next.preferred==='mine'&&next.mine&&!hasMiningTool(s,next.mine)?'requested tool/slot is not carried; choose current inventory or omit the explicit tool':next.preferred==='mine'?'target is not in CURRENT vision.blocks; look/move before mining remembered targets':'required parameters or current observed preconditions are missing';
+    const why=next.preferred==='move'&&next.destination&&moveReached(s.position,next.destination)?'destination already reached (block-cell radius 2); choose the next useful action':next.preferred==='mine'&&next.mine&&supportsFeet(next.mine.position,s.position)?'target supports own feet; reposition before mining':next.preferred==='mine'&&next.mine&&!hasMiningTool(s,next.mine)?'requested tool/slot is not carried; choose current inventory or omit the explicit tool':next.preferred==='mine'?'target is not in CURRENT vision.blocks; look/move before mining remembered targets':'required parameters or current observed preconditions are missing';
     firstProblem=`Invalid first action ${next.preferred}: ${why}`;
    }
    if(this.retries.blocked(next.preferred,next,s))firstProblem='Unchanged failed interaction: choose a different target, reposition or change the relevant conditions';
@@ -410,7 +410,7 @@ export class Runtime {
    if(d.choice==='continue'||d.choice==='wait'&&this.actionPending){this.pendingSwitch=undefined;this.lastSelection={action:'continue',at:Date.now()};this.log('execution_continue',{executionId:execId});return;}
    if(d.choice==='unresolved'){this.log('parameter_selection_unresolved',{requestId,reason:d.reason,attempt:d.attempt});return;}
    const selected=d.selected??(d.choice==='wait'||d.choice==='stop'?{id:'wait',action:'idle' as Action,plan:{goal:'Intentional wait',preferred:'idle' as Action}}:options.find(o=>o.id===d.choice));
-   if(!selected||!candidates(fresh,selected.plan).includes(selected.action)){const reason=selected?.action==='move'&&selected.plan.destination&&reachedCell(fresh.position,selected.plan.destination,2)?'Selected destination is already within arrival radius 2; no movement would occur':'Selected arguments do not pass current physical/observation validation';this.rememberSelectionFeedback(JSON.stringify({kind:'unexecuted_selector_decision',reason,selected: selected?{action:selected.action,plan:selected.plan}:null,currentPosition:fresh.position,at:Date.now()}),reviewBasis);this.log('decision_discarded',{requestId,reason:'selected arguments no longer executable',detail:reason,selectedAction:selected?.action});this.supervisorUrgent=true;return;}
+   if(!selected||!candidates(fresh,selected.plan).includes(selected.action)){const reason=selected?.action==='move'&&selected.plan.destination&&moveReached(fresh.position,selected.plan.destination)?'Selected destination is already within arrival radius 2; no movement would occur':'Selected arguments do not pass current physical/observation validation';this.rememberSelectionFeedback(JSON.stringify({kind:'unexecuted_selector_decision',reason,selected: selected?{action:selected.action,plan:selected.plan}:null,currentPosition:fresh.position,at:Date.now()}),reviewBasis);this.log('decision_discarded',{requestId,reason:'selected arguments no longer executable',detail:reason,selectedAction:selected?.action});this.supervisorUrgent=true;return;}
    if(this.actionPending&&this.activeAction===selected.action&&executionIdentity(this.activeAction!,this.executionPlan!)===executionIdentity(selected.action,selected.plan)){this.pendingSwitch=undefined;return;}
    if(!this.brain.parameterSelection&&this.actionPending&&!['idle','look'].includes(this.activeAction!)){
     const urgent=!!fresh.enemies?.length||fresh.health<(this.executionObserved?.health??fresh.health)||selected.action==='eat'&&fresh.food<14&&fresh.canEat;

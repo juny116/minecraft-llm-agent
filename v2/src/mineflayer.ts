@@ -1,5 +1,5 @@
+import {MOVE_RADIUS,moveReached,MINE_APPROACH_RADIUS,MINE_SIGHT_APPROACH_RADIUS,MINE_PICKUP_MS,MINE_DEFAULT_DIG_MS} from './action-contracts.js';
 import {ImportantPlaces} from './important-places.js';
-import {reachedCell} from './reach.js';
 import {localNavigationTargets} from './navigation.js';
 import {tableSupportMaterial} from './building.js';
 import {knownDestination} from './types.js';
@@ -43,11 +43,11 @@ export class MineflayerWorld implements World {
   private navigationTargets(){
     if(!this.ready)return [];const now=Date.now();if(now-this.navigationHintsAt<2000)return structuredClone(this.navigationHints);this.navigationHintsAt=now;
     this.navigationHints=localNavigationTargets(this.bot.entity.position,this.memory.snapshot(),p=>{
-      if(reachedCell(this.bot.entity.position,p,2))return false;
+      if(moveReached(this.bot.entity.position,p))return false;
       try{
         this.navigationHintMovements??=observedMovements(this.bot,this.memory);
         // getPathTo mutates pathfinder's shared A* context. Queries must be isolated from active goto.
-        const search=this.bot.pathfinder.getPathFromTo(this.navigationHintMovements,this.bot.entity.position,new goals.GoalNear(p.x,p.y,p.z,2),{timeout:40,tickTimeout:8,searchRadius:12,optimizePath:false});
+        const search=this.bot.pathfinder.getPathFromTo(this.navigationHintMovements,this.bot.entity.position,new goals.GoalNear(p.x,p.y,p.z,MOVE_RADIUS),{timeout:40,tickTimeout:8,searchRadius:12,optimizePath:false});
         return search.next().value?.result.status==='success';
       }catch{return false;}
     });return structuredClone(this.navigationHints);
@@ -150,9 +150,9 @@ export class MineflayerWorld implements World {
       if(!this.visible.some(b=>sameCell(b.position,request.position)&&b.name===request.expected))throw Error('Block target not currently observed');
       const cell=request.position,vec=this.bot.entity.position.scaled(0).offset(cell.x,cell.y,cell.z);
       target=this.bot.blockAt(vec);if(!target||target.name!==request.expected)throw Error('Block target changed');const stateId=target.stateId;
-      if(!this.bot.canDigBlock(target))await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,3),active);
+      if(!this.bot.canDigBlock(target))await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,MINE_APPROACH_RADIUS),active);
       active.throwIfAborted();await this.bot.lookAt(vec.offset(.5,.5,.5),false);active.throwIfAborted();
-      if(!this.blockInSight(target)){await this.navigate(new goals.GoalNear(cell.x,Math.floor(this.bot.entity.position.y),cell.z,1),active);active.throwIfAborted();await this.bot.lookAt(vec.offset(.5,.5,.5),false);active.throwIfAborted();}
+      if(!this.blockInSight(target)){await this.navigate(new goals.GoalNear(cell.x,Math.floor(this.bot.entity.position.y),cell.z,MINE_SIGHT_APPROACH_RADIUS),active);active.throwIfAborted();await this.bot.lookAt(vec.offset(.5,.5,.5),false);active.throwIfAborted();}
       const fresh=()=>{const b=this.bot.blockAt(vec),feet=this.bot.entity.position;
         if(!b||b.stateId!==stateId)throw Error('Block target changed');
         if(!b.diggable)throw Error('Block is not diggable with current interaction');
@@ -167,7 +167,7 @@ export class MineflayerWorld implements World {
       active.throwIfAborted();target=fresh();const held=this.bot.heldItem;
       result.tool=held?{name:held.name,enchants:structuredClone(held.enchants??[]),durabilityUsed:held.durabilityUsed}:null;
       this.bot.on('itemDrop',onDrop);digStarted=Date.now();const estimate=this.bot.digTime?.(target);this.motor={phase:'digging',at:digStarted,estimatedDigMs:Number.isFinite(estimate)?estimate:undefined,blockBroken:false};
-      const clock=new AbortController(),timer=setTimeout(()=>clock.abort(new DOMException('Mining attempt budget exhausted','TimeoutError')),request.maxMs??30000),timeout=clock.signal,digSignal=AbortSignal.any([active,timeout]);
+      const clock=new AbortController(),timer=setTimeout(()=>clock.abort(new DOMException('Mining attempt budget exhausted','TimeoutError')),request.maxMs??MINE_DEFAULT_DIG_MS),timeout=clock.signal,digSignal=AbortSignal.any([active,timeout]);
       let stopDig:()=>void=()=>{};
       const interrupted=new Promise<never>((_,reject)=>{stopDig=()=>{this.bot.stopDigging();reject(digSignal.reason);};if(digSignal.aborted)stopDig();else digSignal.addEventListener('abort',stopDig,{once:true});});
       try{const face=this.miningFace(target);if(!face)throw Error('Block has no currently visible mining face');await Promise.race([this.bot.dig(target,false,face),interrupted]);}catch(error){
@@ -179,7 +179,7 @@ export class MineflayerWorld implements World {
       this.memory.observe([{name:'air',position:{...cell},lastSeen:Date.now()}]);this.containers=this.containers.filter(c=>!samePosition(c.position,cell));
       active.throwIfAborted();result.pickup='no_inventory_gain';this.motor={phase:'collecting',at:Date.now(),blockBroken:true};
       // Bounded post-break observation/pickup; danger or cancellation stops this phase.
-      const pickupSignal=AbortSignal.any([active,AbortSignal.timeout(2000)]);
+      const pickupSignal=AbortSignal.any([active,AbortSignal.timeout(MINE_PICKUP_MS)]);
       const stopPickup=()=>this.stop();pickupSignal.addEventListener('abort',stopPickup,{once:true});
       try{
         await delay(250,undefined,{signal:pickupSignal});
@@ -553,7 +553,7 @@ export class MineflayerWorld implements World {
       if (action === 'move') {
         const p=plan?.destination;
         if (!p || !knownDestination({places:this.knownPlaces(),dimension:String(this.bot?.game?.dimension??''),recovery:this.recovery?.context(),importantPlaces:this.importantPlaces?.snapshot()??[]},p)) throw new Error('Destination not observed');
-        await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2),signal);
+        await this.navigate(new goals.GoalNear(p.x,p.y,p.z,MOVE_RADIUS),signal);
         this.observe(true);
       }
       if (action === 'craft') {

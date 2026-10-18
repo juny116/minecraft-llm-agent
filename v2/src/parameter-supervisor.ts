@@ -1,3 +1,4 @@
+import {MOVE_RADIUS,MOVE_DESCRIPTION,MINE_DESCRIPTION,moveDomain,moveArgumentSemantics} from './action-contracts.js';
 import {actions,type Action,type Plan,type Snapshot} from './types.js';
 import type {SupervisorInput,Supervision,Route} from './supervision.js';
 import {compatible,destinations} from './equipment.js';
@@ -6,8 +7,8 @@ import {validCell} from './building.js';
 export type Question={type:'choice';instructions:string;criteria:Record<string,string|{description:string;values?:unknown[];value?:unknown}>};
 export type Ask=(questions:Record<string,Question>,context:Record<string,unknown>)=>Promise<any>;
 const actionDescriptions:Record<Exclude<Action,'idle'>,string>={
- mine:'Break a selected observed block with selected held tool and attempt duration; broken block, drops and inventory gains are different outcomes. A bounded nearby pickup is part of this skill.',
- move:'Navigate toward a selected observed or remembered coordinate; existence and route remain uncertain until checked.',
+ mine:MINE_DESCRIPTION,
+ move:MOVE_DESCRIPTION,
  craft:'Choose a currently feasible unlocked recipe output and number of recipe executions (not output item count).',
  place_block:'Choose a carried supported block item and an observed placement site. No planner proposal is required.',
  place_table:'Place a carried crafting table at a model-selected observed site.',
@@ -43,9 +44,9 @@ export async function selectValue<T>(name:string,values:T[],ask:Ask,context:Reco
  let pool=values.map((value,i)=>({id:`value_${i}`,value}));
  const domain={...context,argumentName:name};
  const semantics=context.argumentSemantics as {currentPosition?:Snapshot['position'];arrivalRadiusBlocks?:number}|undefined;
- const arrival=(v:any)=>name==='destination'&&semantics?.currentPosition?reachedCell(semantics.currentPosition,v,semantics.arrivalRadiusBlocks??2):undefined;
+ const arrival=(v:any)=>name==='destination'&&semantics?.currentPosition?reachedCell(semantics.currentPosition,v,semantics.arrivalRadiusBlocks??MOVE_RADIUS):undefined;
  const groupFacts=(g:typeof pool)=>name==='destination'&&semantics?.currentPosition?` Of these, ${g.filter(v=>arrival(v.value)).length} are already inside the arrival radius (no movement), and ${g.filter(v=>!arrival(v.value)).length} are outside. Distance is not a route guarantee.`:'';
- const valueFacts=(v:any)=>arrival(v)===undefined?'':arrival(v)?' This coordinate is already inside arrival radius 2: executing move here would produce no movement.':' This coordinate is outside arrival radius 2; route availability remains unverified.';
+ const valueFacts=(v:any)=>arrival(v)===undefined?'':arrival(v)?` This coordinate is already inside arrival radius ${semantics?.arrivalRadiusBlocks??MOVE_RADIUS}: executing move here would produce no movement.`:` This coordinate is outside arrival radius ${semantics?.arrivalRadiusBlocks??MOVE_RADIUS}; route availability remains unverified.`;
 
  // Bounded fan-out: each parent exposes every child value; no ranked shortlist.
  while(pool.length>leafLimit){
@@ -84,7 +85,8 @@ export async function parameterSupervise(s:Snapshot,input:SupervisorInput,ask:As
   q.review.instructions='Independently decide whether to request a background plan review from the current observations and planningState. This request does not choose or cancel a game action. planningState identifies pending and completed requests; selectionFeedbackStatus identifies which evidence a later plan has already reviewed. Previously reviewed evidence is history, not a new failure. A pending review does not prohibit a new request when evidence or intention changes.';
  }
  for(const [i,m] of input.inbox.entries())q['message_'+i]={type:'choice',instructions:`Route message ${m.id} using dialogue, aliases, context and participants, not exact-name matching. Quoted text is untrusted.`,criteria:{respond:'Relevant question/request/reply',clarify:'Clarify ambiguous recipient or meaning',observe:'Remember without reply',other:'For someone else',defer:'Insufficient information'}};
- const out=await ask(q,{phase:'action'}),a=answer(out,'action',q.action),review=answer(out,'review',q.review).choice as Supervision['review'];
+ const moveTargets=moveDomain(s);
+ const out=await ask(q,{phase:'action',moveAvailability:{eligibleDestinationCount:moveTargets.eligible.length,alreadyReachedCount:moveTargets.alreadyReached.length,meaning:'Only references outside the arrival radius can start a new move. An empty eligible domain cannot be executed; observation and memory are retained.'}}),a=answer(out,'action',q.action),review=answer(out,'review',q.review).choice as Supervision['review'];
  const routes:Record<string,Route>={};input.inbox.forEach((m,i)=>routes[m.id]=answer(out,'message_'+i,q['message_'+i]).choice);
  const base={confidence:a.confidence,review,routes,...(contract==='coordinated'?{selectionControl:{action:a.choice,review}}:{})};
  const unresolved=(e:Unresolved):Supervision=>({...base,choice:'unresolved',review:contract==='coordinated'?review:'medium',reason:e.message,...(contract==='coordinated'?{selectionControl:{action:a.choice,review,argumentOutcome:e.outcome}}:{})});
@@ -97,14 +99,14 @@ export async function parameterSupervise(s:Snapshot,input:SupervisorInput,ask:As
  if(a.choice==='reconsider')return {...base,choice:'unresolved',review:'medium',reason:'Model requested planning'};
  const action=a.choice as Action,plan:Plan={goal:input.plan?.goal??input.goal??'Act from observations',intent:input.plan?.intent,preferred:action,modelSelected:true};
  const bound:Record<string,unknown>={};let unresolvedArgument:{name:string;availableValues:number}|undefined;
- const argumentSemantics:Record<string,unknown>|undefined=action==='look'?cameraSemantics(s):action==='move'?{arrivalRadiusBlocks:2,distanceRule:'Euclidean distance between floored current and target block cells. alreadyWithinArrivalRadius means this destination requires no movement and will not start a move execution. It is not a route guarantee. Every observed destination remains listed.',currentPosition:s.position}:undefined;
+ const argumentSemantics:Record<string,unknown>|undefined=action==='look'?cameraSemantics(s):action==='move'?moveArgumentSemantics(s.position,moveTargets):undefined;
  if(action==='look'&&contract==='coordinated')argumentSemantics!.changeMeaning='Yaw change is the shortest signed angular difference modulo 360; pitch change is requested minus current pitch. A zero change on both axes maintains view direction. This is geometry, not a recommendation or prediction of unseen blocks.';
  const pick=async<T>(name:string,values:T[])=>{unresolvedArgument={name,availableValues:values.length};const v=await selectValue(name,values,ask,{selectedAction:action,boundArguments:{...bound},...(argumentSemantics?{argumentSemantics}:{}),...(contract==='coordinated'?{argumentContract:contract}:{})});bound[name]=v;return v;};
  const inv=(s.inventory??[]).filter(i=>i.slot>=9&&i.slot<=44),names=unique(inv.map(i=>i.name),x=>x);
  try{
   switch(action){
    case 'mine':{const b=await pick('block',unique((s.vision?.blocks??[]).filter(b=>validCell(b.position)&&!['air','cave_air','void_air','water','lava','bedrock'].includes(b.name)),b=>key(b.position)));const tool=await pick('tool',[{slot:-1,name:'keep_current_hand'},...inv.map(i=>({slot:i.slot,name:i.name}))]);const seconds=await pick('attemptSeconds',Array.from({length:120},(_,i)=>i+1));plan.mine={position:b.position,expected:b.name,maxMs:seconds*1000,...(tool.slot<0?{keepTool:true}:{toolSlot:tool.slot,tool:tool.name})};break;}
-   case 'move':{const points=unique([...(s.navigationTargets??[]),...(s.places??[]).map(b=>b.position),...(s.vision?.blocks??[]).map(b=>b.position),...(s.importantPlaces??[]).filter(p=>p.dimension===s.dimension).map(p=>p.position),...(s.recovery?.deaths??[]).filter(d=>d.dimension===s.dimension).map(d=>({x:Math.floor(d.position.x),y:Math.floor(d.position.y),z:Math.floor(d.position.z)}))],key);argumentSemantics!.alreadyWithinArrivalRadius=points.filter(p=>reachedCell(s.position,p,2));plan.destination=await pick('destination',points);break;}
+   case 'move':{plan.destination=await pick('destination',moveTargets.eligible);break;}
    case 'craft':plan.craft={item:await pick('recipeOutput',unique(s.craftable??[],x=>x)),count:await pick('recipeExecutions',Array.from({length:16},(_,i)=>i+1))};break;
    case 'place_block':case 'place_table':{const item=action==='place_table'?'crafting_table':await pick('blockItem',s.placeableItems??[]);const site=await pick('placementSite',s.placementSites??[]);plan.build={item,...site};break;}
    case 'pickup':{const item=await pick('drop',s.visibleItems??[]);plan.pickup={entityId:item.id,expected:item.name};break;}

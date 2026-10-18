@@ -1,0 +1,16 @@
+import type {Snapshot} from './types.js';
+import {reachedCell} from './reach.js';
+export const MOVE_RADIUS=2;
+export const MINE_APPROACH_RADIUS=3;
+export const MINE_SIGHT_APPROACH_RADIUS=1;
+export const MINE_PICKUP_MS=2000;
+export const MINE_DEFAULT_DIG_MS=30000;
+export const MOVE_DESCRIPTION=`Approach an observed or remembered reference coordinate until the floored body cell is within Euclidean radius ${MOVE_RADIUS}. This is not exact-position walking; a solid block can be a reference. Already-reached coordinates do not start movement and are excluded from new move arguments, but remain in observation and memory. A selection requests a bounded path attempt; route availability is checked at execution and is not guaranteed. Choose any eligible destination or withdraw; no destination is preferred.`;
+export const MINE_DESCRIPTION=`Break one selected currently observed block, not an area. The skill approaches within ${MINE_APPROACH_RADIUS} blocks if outside digging reach, then may approach within ${MINE_SIGHT_APPROACH_RADIUS} horizontally at current feet height to obtain a visible face. Actual digging requires Mineflayer reach and visibility checks. Select tool and dig attempt duration; duration covers digging, not approach. If omitted the dig limit is ${MINE_DEFAULT_DIG_MS}ms. After confirmed break, attempt nearby visible drop collection for up to ${MINE_PICKUP_MS}ms. Break, observed drops and inventory gain are separate outcomes; neither drops nor collection are guaranteed. Timeout is not proof of impossibility.`;
+export function moveReached(position:Snapshot['position'],target:Snapshot['position']){return reachedCell(position,target,MOVE_RADIUS);}
+export function partitionMoveDestinations(position:Snapshot['position'],points:Snapshot['position'][]){
+ const observed=[...new Map(points.map(p=>[`${p.x},${p.y},${p.z}`,p])).values()];
+ return {observed,eligible:observed.filter(p=>!moveReached(position,p)),alreadyReached:observed.filter(p=>moveReached(position,p))};
+}
+export function moveDomain(s:Snapshot){return partitionMoveDestinations(s.position,[...(s.navigationTargets??[]),...(s.places??[]).map(b=>b.position),...(s.vision?.blocks??[]).map(b=>b.position),...(s.importantPlaces??[]).filter(p=>p.dimension===s.dimension).map(p=>p.position),...(s.recovery?.deaths??[]).filter(d=>d.dimension===s.dimension).map(d=>({x:Math.floor(d.position.x),y:Math.floor(d.position.y),z:Math.floor(d.position.z)}))]);}
+export function moveArgumentSemantics(position:Snapshot['position'],domain:ReturnType<typeof partitionMoveDestinations>){return {arrivalRadiusBlocks:MOVE_RADIUS,currentPosition:position,distanceRule:'Euclidean distance between floored current and target block cells; not a route guarantee.',eligibleDestinationCount:domain.eligible.length,alreadyWithinArrivalRadius:{meaning:'These coordinates already satisfy completion: no move starts for them. They remain known but are not new move arguments.',coordinates:domain.alreadyReached}};}

@@ -1,6 +1,7 @@
 import type {Snapshot} from './types.js';
 import type {Question} from './parameter-supervisor.js';
-export const MOVE_SEMANTICS='move approaches an observed or remembered reference coordinate until the floored body cell is within Euclidean radius 2. It does not require standing inside that exact block. A solid block can be a reference point. Selecting a reference requests a bounded path attempt, not a claim that the route is known or guaranteed. Route search and current observation checks occur locally at execution. Already within radius means no move will start. Historical observations may have changed; current visibility and past observation are different. Choose or withdraw based on the intention and evidence; no destination is preferred.';
+import {MOVE_DESCRIPTION} from './action-contracts.js';
+export const MOVE_SEMANTICS=MOVE_DESCRIPTION;
 const key=(p:{x:number;y:number;z:number})=>`${p.x},${p.y},${p.z}`;
 export function movementEvidence(s:Pick<Snapshot,'places'|'vision'|'navigationTargets'>){
  const blocks=new Map<string,any>();

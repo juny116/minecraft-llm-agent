@@ -65,12 +65,12 @@ test('LLM planning sees unexecuted JEV evidence, retained across generic reconsi
  try{await r.tick();const first=r.planning.selectorFeedback;assert.ok(first?.includes('placementSite'));assert.ok(first?.includes('chest'));await r.tick();assert.equal(r.planning.selectorFeedback,first);assert.equal(r.planning.recentActions.length,0);}finally{r.close();}
 });
 
-test('destination candidates retain reached cells and expose exact motor arrival semantics',async()=>{
+test('destination arguments exclude reached references while retaining their factual context',async()=>{
  const s=fixture();s.position={x:-1.5,y:64,z:-1.5};s.navigationTargets=[{x:-2,y:65,z:-3},{x:8,y:64,z:0}];const calls:any[]=[];
- const d=await parameterSupervise(s,input,responder('move',{destination:p=>p.x===-2},calls));
- assert.deepEqual(d.selected?.plan.destination,{x:-2,y:65,z:-3}); // model may still choose it
- const q=calls.find(c=>c.questions.destination);assert.ok(q.context.argumentSemantics.alreadyWithinArrivalRadius.some((p:any)=>p.x===-2&&p.y===65&&p.z===-3));assert.equal(q.context.argumentSemantics.arrivalRadiusBlocks,2);
- assert.ok(!candidates(s,d.selected!.plan).includes('move'));
+ const d=await parameterSupervise(s,input,responder('move',{destination:p=>p.x===8},calls));
+ assert.deepEqual(d.selected?.plan.destination,{x:8,y:64,z:0});
+ const q=calls.find(c=>c.questions.destination);assert.ok(q.context.argumentSemantics.alreadyWithinArrivalRadius.coordinates.some((p:any)=>p.x===-2&&p.y===65&&p.z===-3));assert.equal(q.context.argumentSemantics.arrivalRadiusBlocks,2);
+ assert.ok(candidates(s,d.selected!.plan).includes('move'));assert.deepEqual(s.navigationTargets[0],{x:-2,y:65,z:-3});
 });
 
 test('explicit live contract preserves all argument values and allows withdrawal',async()=>{
