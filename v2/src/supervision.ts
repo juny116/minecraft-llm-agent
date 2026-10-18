@@ -3,8 +3,8 @@ import {supportsFeet} from './building.js';
 import {intentSatisfied} from './work-intent.js';
 export type Option={id:string;action:Action;plan:Plan};
 export type Route='respond'|'clarify'|'observe'|'other'|'defer';
-export type Supervision={choice:string;confidence:number;review:'none'|'medium'|'long';routes:Record<string,Route>};
-export type SupervisorInput={options:Option[];execution:{id:number;action:Action;plan:Plan;elapsedMs:number;motor?:import('./types.js').MotorProgress;observedChanges?:unknown;interruptionNote?:string}|null;inbox:import('./social.js').ChatEvent[];goal:string|null;plan?:Plan;progress?:unknown;recentOutcome?:unknown;recentResults?:unknown[];recovery?:unknown};
+export type Supervision={selected?:Option;reason?:string;choice:string;confidence:number;review:'none'|'medium'|'long';routes:Record<string,Route>};
+export type SupervisorInput={parameterSelection?:boolean;selectionFeedback?:string;blockedInteractions?:unknown;options:Option[];execution:{id:number;action:Action;plan:Plan;elapsedMs:number;motor?:import('./types.js').MotorProgress;observedChanges?:unknown;interruptionNote?:string}|null;inbox:import('./social.js').ChatEvent[];goal:string|null;plan?:Plan;progress?:unknown;recentOutcome?:unknown;recentResults?:unknown[];recovery?:unknown};
 // These are executable, observed alternatives, not a hidden task curriculum.
 export function executionOptions(s:Snapshot,p:Plan):Option[]{
  if(p.intent)return observedOptions(s,p);
@@ -21,7 +21,7 @@ export function executionOptions(s:Snapshot,p:Plan):Option[]{
 function distance(p:Snapshot['position'],s:Snapshot){return Math.hypot(p.x-s.position.x,p.y-s.position.y,p.z-s.position.z);}
 
 export function executionIdentity(action:Action,p:Plan){
- const parameters=action==='mine'?(p.mine?{...p.mine,maxMs:p.mine.maxMs??30000}:undefined):action==='move'?p.destination:action==='craft'?p.craft:action==='pickup'?p.pickup:action==='place_block'?p.build:action==='equip'?p.equip:action==='look'?p.look:['inspect_container','deposit','withdraw'].includes(action)?[p.container,p.transfer]:action==='give'?p.transfer:null;
+ const parameters=action==='mine'?(p.mine?{...p.mine,maxMs:p.mine.maxMs??30000}:undefined):action==='move'?p.destination:action==='craft'?p.craft:action==='pickup'?p.pickup:['place_block','place_table'].includes(action)?p.build:action==='equip'?p.equip:action==='look'?p.look:action==='idle'?p.waitMs:action==='eat'?p.foodItem:action==='follow'?p.followPlayer:['attack','flee'].includes(action)?p.targetEntityId:['inspect_container','deposit','withdraw'].includes(action)?[p.container,p.transfer]:action==='give'?p.transfer:null;
  const stable=(v:any):any=>Array.isArray(v)?v.map(stable):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).filter(([,x])=>x!==undefined).sort(([a],[b])=>a.localeCompare(b)).map(([k,x])=>[k,stable(x)])):v;
  return JSON.stringify(stable([action,parameters]));
 }

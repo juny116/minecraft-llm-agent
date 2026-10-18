@@ -18,11 +18,11 @@ export interface CombatPort {
   now(): number;
 }
 // Short local skills return control to JEV; no per-swing model requests.
-export async function combat(port: CombatPort, action:'attack'|'flee', signal:AbortSignal): Promise<Encounter> {
+export async function combat(port: CombatPort, action:'attack'|'flee', signal:AbortSignal,selection?:{targetId:number;modelSelected?:boolean}): Promise<Encounter> {
   signal.throwIfAborted();
   const observed=port.observe();
   const initial={...observed,position:{...observed.position}};
-  const target=[...initial.enemies].sort((a,b)=>a.distance-b.distance)[0];
+  const target=selection?initial.enemies.find(e=>e.id===selection.targetId):[...initial.enemies].sort((a,b)=>a.distance-b.distance)[0];
   if(!target) throw new Error('No visible hostile target');
   const record:Encounter={targetId:target.id,kind:target.kind,action,startedAt:port.now(),healthBefore:initial.health,healthAfter:initial.health,attacksSent:0,outcome:'time_limit'};
   let lastSeen={...target.position}, lastStrike=-Infinity, lostSince:number|undefined;
@@ -38,7 +38,7 @@ export async function combat(port: CombatPort, action:'attack'|'flee', signal:Ab
       if(evidence?.deathObserved){record.outcome=evidence.ownKillConfirmed?'target_defeated':'target_death_observed';break;}
       const current=s.enemies.find(e=>e.id===target.id);
       if(action==='attack'){
-        if(s.health<=6){record.outcome='low_health_stop';break;}
+        if(!selection?.modelSelected&&s.health<=6){record.outcome='low_health_stop';break;}
         if(!current){
           port.stop();
           if(!port.faceLastSeen){record.outcome='target_left_view';break;}

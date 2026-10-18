@@ -1,10 +1,10 @@
 import type {Position} from './vision.js';
 export type BuildRequest={item:string;position:Position;reference:Position};
-export type DigRequest={position:Position;expected:string;maxMs?:number;tool?:string;toolSlot?:number};
+export type DigRequest={position:Position;expected:string;maxMs?:number;keepTool?:boolean;tool?:string;toolSlot?:number};
 export const sameCell=(a:Position,b:Position)=>a.x===b.x&&a.y===b.y&&a.z===b.z;
 export function validCell(p:Position){return !!p&&[p.x,p.y,p.z].every(Number.isSafeInteger)&&Math.abs(p.x)<=30000000&&Math.abs(p.z)<=30000000&&p.y>=-64&&p.y<=319;}
 // Ordinary construction materials; special multi-block, falling, fluid and interactive placements need separate executors.
-export function buildingMaterial(name:string){return /^(dirt|grass_block|cobblestone|mossy_cobblestone|stone|andesite|diorite|granite|polished_(andesite|diorite|granite)|deepslate|cobbled_deepslate|bricks|stone_bricks|mossy_stone_bricks|cracked_stone_bricks|deepslate_bricks|deepslate_tiles|sandstone|red_sandstone|smooth_stone|smooth_sandstone|smooth_red_sandstone|glass|terracotta|obsidian|netherrack|nether_bricks|end_stone|end_stone_bricks|quartz_block|smooth_quartz|prismarine|dark_prismarine|prismarine_bricks|calcite|tuff|mud_bricks|packed_mud|snow_block|clay|bookshelf|crafting_table|furnace|blast_furnace|smoker|[a-z_]+_(planks|log|wood|stem|hyphae|wool|concrete|terracotta|stained_glass)|(?:iron|gold|diamond|emerald|copper|coal|lapis|redstone|netherite)_block)$/.test(name);}
+export function buildingMaterial(name:string){return /^(dirt|grass_block|cobblestone|mossy_cobblestone|stone|andesite|diorite|granite|polished_(andesite|diorite|granite)|deepslate|cobbled_deepslate|bricks|stone_bricks|mossy_stone_bricks|cracked_stone_bricks|deepslate_bricks|deepslate_tiles|sandstone|red_sandstone|smooth_stone|smooth_sandstone|smooth_red_sandstone|glass|terracotta|obsidian|netherrack|nether_bricks|end_stone|end_stone_bricks|quartz_block|smooth_quartz|prismarine|dark_prismarine|prismarine_bricks|calcite|tuff|mud_bricks|packed_mud|snow_block|clay|bookshelf|crafting_table|chest|furnace|blast_furnace|smoker|[a-z_]+_(planks|log|wood|stem|hyphae|wool|concrete|terracotta|stained_glass)|(?:iron|gold|diamond|emerald|copper|coal|lapis|redstone|netherite)_block)$/.test(name);}
 export function validateBuild(r:BuildRequest){
  if(!r||!buildingMaterial(r.item))throw Error('Invalid block placement: choose a supported ordinary solid block item');
  if(!validCell(r.position)||!validCell(r.reference))throw Error('Invalid block placement: position and reference must be integer block cells within world bounds');
@@ -17,4 +17,4 @@ export function supportsFeet(cell:Position,feet:Position){return cell.y<feet.y&&
 
 // Placement is allowed on observed ordinary solid materials, including leaf canopies.
 // Actual collision, air clearance and entity overlap are checked again by the executor.
-export function tableSupportMaterial(name:string){return name==='bedrock'||buildingMaterial(name)||/^[a-z_]+_leaves$/.test(name);}
+export function tableSupportMaterial(name:string){return name==='bedrock'||name!=='chest'&&buildingMaterial(name)||/^[a-z_]+_leaves$/.test(name);}
