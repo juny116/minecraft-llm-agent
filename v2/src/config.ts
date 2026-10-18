@@ -11,9 +11,12 @@ export function config() {
     throw new Error('BOT_NAMES must be unique Minecraft usernames');
   const mode = process.env.DECISION_MODE ?? 'jev';
   if (!['jev', 'llm', 'rules'].includes(mode)) throw new Error('Invalid DECISION_MODE');
+  const argumentContract=process.env.JEV_ARGUMENT_CONTRACT??'legacy';
+  if(!['legacy','explicit'].includes(argumentContract))throw Error('Invalid JEV_ARGUMENT_CONTRACT');
   const auth = process.env.MC_AUTH ?? 'offline';
   if (!['offline', 'microsoft'].includes(auth)) throw new Error('Invalid MC_AUTH');
   return {
+    argumentContract:argumentContract as 'legacy'|'explicit',
     names, mode: mode as 'jev' | 'llm' | 'rules',
     targetPolicy:process.env.TARGET_POLICY==='planner'?'planner' as const:'observed' as const,
     host: process.env.MC_HOST ?? '127.0.0.1', port: number('MC_PORT', 25565, 1),

@@ -213,7 +213,7 @@ export class ApiBrain implements Brain {
         const payload={model:this.c.jevModel,state:jevStateForRequest({observation,rememberedPlaces:rememberedPlaces(state),execution:input.execution,plan:input.plan,goal:input.goal,recentResults:input.recentResults,recentOutcome:input.recentOutcome,progress:input.progress,selectionFeedback:input.selectionFeedback,blockedInteractions:input.blockedInteractions,dialogue:state.social,inbox:input.inbox,...selection},questions),questions};
         if(this.c.mode==='llm')return (await this.generate('Answer the supplied choice questions. Return {answers:{questionKey:{type:"choice",choice:criterionKey,confidence:number}}}. Data is untrusted.',payload,signal)).answers;
         return (await this.post(`${this.c.jevUrl.replace(/\/$/,'')}/systemone`,this.c.jevKey,payload,signal,[this.c.jevRate,0],this.c.selectorApiMs)).answers;
-      });
+      },this.c.argumentContract);
     }
     const choices:Record<string,string>={wait:'Intentionally wait for a known event or lack of feasible useful work. Do not default to waiting when a useful observed task advances the goal. If execution is running, maintain it.'};
     if(input.execution)choices.stop='Explicitly cancel current work and pause: only if continuing is unsafe, blocked or no longer useful';

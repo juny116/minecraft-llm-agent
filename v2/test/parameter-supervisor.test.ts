@@ -72,3 +72,22 @@ test('destination candidates retain reached cells and expose exact motor arrival
  const q=calls.find(c=>c.questions.destination);assert.ok(q.context.argumentSemantics.alreadyWithinArrivalRadius.some((p:any)=>p.x===-2&&p.y===65&&p.z===-3));assert.equal(q.context.argumentSemantics.arrivalRadiusBlocks,2);
  assert.ok(!candidates(s,d.selected!.plan).includes('move'));
 });
+
+test('explicit live contract preserves all argument values and allows withdrawal',async()=>{
+ const calls:any[]=[];
+ const d=await parameterSupervise(fixture(),input,async(q,c)=>{
+  calls.push({q,c});
+  if(c.argumentName){const name=Object.keys(q)[0];assert.ok(!('none' in q[name].criteria));assert.ok('revise' in q[name].criteria);return {[name]:{type:'choice',choice:'revise',confidence:.01}};}
+  return responder('place_block')(q,c);
+ },'explicit');
+ assert.equal(d.choice,'unresolved');assert.match(d.reason!,/withdrew.*blockItem/);
+ assert.equal(calls.length,2);assert.equal(d.selected,undefined);
+ assert.equal(Object.keys(calls[1].q.blockItem.criteria).length,fixture().placeableItems!.length+1);
+});
+test('explicit live contract binds low-confidence values without mandatory execution',async()=>{
+ const d=await parameterSupervise(fixture(),input,async(q,c)=>{
+  if(c.argumentName){const name=Object.keys(q)[0];const choice=Object.keys(q[name].criteria).find(k=>k.startsWith('value_')||k.startsWith('group_'))!;return {[name]:{type:'choice',choice,confidence:.01}};}
+  return responder('place_block')(q,c);
+ },'explicit');
+ assert.equal(d.selected?.action,'place_block');assert.equal(d.confidence,.1);
+});
