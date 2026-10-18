@@ -1,4 +1,3 @@
-# Shared project instructions
+# Project instructions
 
-Read and follow `AGENTS.md` at this repository root, then `v2/docs/SPEC.md` and `v2/docs/HANDOFF.md`.
-They are the shared source of truth for Claude, Codex, and other agents. Inspect current Git changes before starting. Do not reset another agent's work.
+Follow [AGENTS.md](AGENTS.md). Inspect current changes before editing; do not reset another agent's work. Public documentation describes the current implementation and verified limitations. Detailed local handoffs, when present, are under ignored `v2/runs/private-docs/`.

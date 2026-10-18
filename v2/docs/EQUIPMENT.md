@@ -1,9 +1,0 @@
-# Equipment skill (A)
-
-One action `equip` covers hand, off-hand, head, torso, legs and feet. Parameter: `equip:{item:string|null,destination,sourceSlot?:5..45}`. Null means remove into inventory/empty hand, never drop. Explicit sourceSlot selects the currently observed exact stack when names match but enchantments/durability differ. Use fresh inventory after transfers. Common armor plus elytra/carved pumpkin are accepted; special head items are not yet enumerated.
-
-Model planning/medium-step activation/candidates/JEV descriptions and runtime failure identity carry this parameter. Inventory/equipment snapshots and execution results enter existing action/experience records. No automatic best-gear ranking added; existing mining/combat tool selection remains unchanged. Equipping a bow or shield does NOT implement firing or blocking.
-
-Normal Mineflayer equip/moveSlotItem calls do the clicks. Preconditions: closed container and empty cursor. Destination fingerprint (name/metadata/enchants/durability/NBT) and total item counts must match after execution. Cancellation guards each inventory click; dropping via outside-window clicks is forbidden. Unequip requires a free inventory slot and refuses when full; avoids upstream equipEmpty behavior that can toss held items. Partial cancelled operations are not rolled back; recorded before/after snapshots remain evidence. No creative/admin inventory operations.
-
-Typecheck and132 offline tests passed, including exact enchanted stack, remove/restore conservation, empty hand, full inventory refusal, no-op response, cancelled multi-click and stale source/window constraints. Evidence runs/equipment-tests.log. A bounded live probe is scripts/equipment-functional.ts --live-functional; only normal gear changes, no APIs. See HANDOFF for actual live results.
