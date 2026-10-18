@@ -235,12 +235,13 @@ export class Runtime {
      if(this.failureStreak>=2)this.requestPlan('repeated_failure_or_no_progress');
     }else if(outcome==='succeeded'){this.failureStreak=0;this.failureKey='';this.checkStep(after,action);}
    }
-   this.actionPending=false;this.activeAction=undefined;this.actionController=undefined;if(action!=='idle'&&action!=='look')this.supervisorUrgent=true;
+   this.actionPending=false;this.activeAction=undefined;this.actionController=undefined;this.supervisorUrgent=true;
   }
  }
  private lastSelection:{action:Action|'continue';at:number}|null=null;
  get executionStatus(){return {remainingPlanSteps:Math.max(0,this.medium.steps.length-this.medium.activeStep),goalValidationFailures:this.longValidationFailures,progress:this.progress.context(Date.now()),activeAction:this.activeAction??null,actionPending:this.actionPending,selectorPending:this.decisionPending,mediumPending:this.planPending,longPending:this.longPending,dialoguePending:this.socialPending,reflectionPending:this.reflectionPending,needsGoalReview:this.options.goals?.needsReview??false,hasLongGoal:!!this.longGoal,lastSelection:this.lastSelection?{...this.lastSelection}:null};}
  private supervisorAt=-Infinity;
+ private supervisorSequence=0;
  private supervisorUrgent=true;
  private longPending=false;
  private longLast=-Infinity;
@@ -369,12 +370,14 @@ export class Runtime {
   if(!this.actionPending)this.checkStep(s);
   if(this.decisionPending||!this.supervisorUrgent&&now-this.supervisorAt<(this.options.selectorMs??1000))return;
   this.supervisorUrgent=false;this.supervisorAt=now;this.decisionPending=true;
-  const life=this.longGeneration,execId=this.executionId,started=Date.now();
+  const life=this.longGeneration,execId=this.executionId,started=Date.now(),requestId=++this.supervisorSequence;
   const options=executionOptions(s,this.plan).filter(o=>!this.retries.blocked(o.action,o.plan,s)&&(o.action!=='look'||now-this.lastLookAt>=2000));
   const inbox=this.options.social?.pendingRouting(now)??[];
-  const input:SupervisorInput={options,execution:this.actionPending?{id:execId,action:this.activeAction!,plan:this.executionPlan!,elapsedMs:Date.now()-this.executionStarted,motor:this.world.executionProgress?.(),observedChanges:this.executionObserved?changes(compact(this.executionObserved),compact(s)):undefined,interruptionNote:this.activeAction==='mine'?'Interrupting mining can lose accumulated digging progress':'Switching cancels the current local execution'}:null,inbox,goal:this.longGoal,plan:this.plan,progress,recentOutcome:this.journal.recent.at(-1),recovery:s.recovery};
+  const input:SupervisorInput={options,execution:this.actionPending?{id:execId,action:this.activeAction!,plan:this.executionPlan!,elapsedMs:Date.now()-this.executionStarted,motor:this.world.executionProgress?.(),observedChanges:this.executionObserved?changes(compact(this.executionObserved),compact(s)):undefined,interruptionNote:this.activeAction==='mine'?'Interrupting mining can lose accumulated digging progress':'Switching cancels the current local execution'}:null,inbox,goal:this.longGoal,plan:this.plan,progress,recentOutcome:this.journal.recent.at(-1),recentResults:this.journal.recent.filter(r=>!['idle','look'].includes(r.decision.action)).slice(-4).map(r=>({id:r.id,endedAt:r.endedAt,action:r.decision.action,outcome:r.outcome,result:r.result.slice(0,400),changes:r.changes})),recovery:s.recovery};
+  this.log('supervisor_request',{requestId,executionId:execId,observedAt:started,executionRunning:!!input.execution});
   try{
    const d=await this.brain.supervise!(s,input,this.lifetime.signal);
+   this.log('supervisor_response',{requestId,executionId:execId,elapsedMs:Date.now()-started,executionRunning:this.actionPending,choice:d.choice});
    if(this.closed||life!==this.longGeneration)return;
    // Routing belongs to message IDs, not movement state. Preserve new arrivals in the queue.
    for(const m of inbox)if(d.routes[m.id])this.options.social?.route(m.id,d.routes[m.id]);
@@ -382,6 +385,7 @@ export class Runtime {
    const fresh=this.world.snapshot();
    if(!fresh.ready||fresh.health<=0||Date.now()-started>(this.options.decisionTtlMs??5000)||execId!==this.executionId){this.log('decision_discarded');return;}
    if(fresh.health<s.health||JSON.stringify(fresh.enemies?.map(e=>e.id)??[])!==enemyKey){this.supervisorUrgent=true;this.log('decision_discarded',{reason:'threat changed'});return;}
+   if((d.choice==='continue'||d.choice==='wait'&&input.execution)&&!this.actionPending){this.pendingSwitch=undefined;this.supervisorUrgent=true;this.log('decision_discarded',{requestId,executionId:execId,reason:'execution already finished'});return;}
    if(d.choice==='continue'||d.choice==='wait'&&this.actionPending){this.pendingSwitch=undefined;this.lastSelection={action:'continue',at:Date.now()};this.log('execution_continue',{executionId:execId});return;}
    const selected=d.choice==='wait'||d.choice==='stop'?{id:'wait',action:'idle' as Action,plan:{goal:'Intentional wait',preferred:'idle' as Action}}:options.find(o=>o.id===d.choice);
    if(!selected||!candidates(fresh,selected.plan).includes(selected.action))return;

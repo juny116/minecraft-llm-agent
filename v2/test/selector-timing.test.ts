@@ -1,0 +1,44 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {Runtime} from '../src/runtime.js';
+import {MockWorld} from '../src/mock.js';
+import {MockBrain} from '../src/providers.js';
+import type {Brain} from '../src/types.js';
+import type {Supervision} from '../src/supervision.js';
+const answer=(choice:string):Supervision=>({choice,confidence:1,review:'none',routes:{}});
+class ControlledWorld extends MockWorld {
+ finish!:()=>void; starts=0;
+ override execute(_action:any,signal:AbortSignal){this.starts++;return new Promise<string>(resolve=>{this.finish=()=>resolve('done');signal.addEventListener('abort',()=>resolve('cancelled'),{once:true});});}
+}
+function fixture(supervise:NonNullable<Brain['supervise']>){
+ const world=new ControlledWorld(),events:{event:string;data:any}[]=[];
+ const brain:Brain={plan:()=>new Promise(()=>{}),choose:new MockBrain().choose,supervise};
+ const runtime=new Runtime(world,brain,{planMs:30000,actionMs:10000,minConfidence:0,selectorMs:1000},(event,data)=>events.push({event,data}));
+ const x=runtime as any;x.lastReady=true;x.lastLifeKey='true';
+ return {world,runtime,x,events};
+}
+for(const choice of ['continue','wait'])test(`finished execution invalidates late ${choice} and wakes next tick`,async()=>{
+ let resolve!:(d:Supervision)=>void,calls=0;
+ const {world,runtime,x,events}=fixture(async()=>++calls===2?new Promise<Supervision>(r=>resolve=r):answer('wait'));
+ try {
+  await runtime.tick();const t=Date.now();const pending=runtime.tick(t+1100);
+  world.finish();await x.executionTask;resolve(answer(choice));await pending;
+  assert.equal(world.starts,1);assert.ok(events.some(e=>e.event==='decision_discarded'&&e.data.reason==='execution already finished'));
+  await runtime.tick(t+1101);assert.equal(calls,3);assert.equal(world.starts,2);
+  const req=events.filter(e=>e.event==='supervisor_request'),res=events.filter(e=>e.event==='supervisor_response');assert.deepEqual(req.map(e=>e.data.requestId),res.map(e=>e.data.requestId));
+ }finally{runtime.close();await x.executionTask;}
+});
+for(const action of ['idle','look'] as const)test(`${action} completion wakes selection without truncating the running action`,async()=>{
+ let calls=0;
+ const {world,runtime,x}=fixture(async(_s,i)=>{calls++;return answer(action==='idle'?'wait':i.options.find(o=>o.action==='look')?.id??'wait');});
+ runtime.plan={goal:'Observe',preferred:action};
+ try {const t=Date.now();await runtime.tick(t);await runtime.tick(t+1);assert.equal(calls,1);assert.equal(world.starts,1);
+ world.finish();await x.executionTask;await runtime.tick(t+2);assert.equal(calls,2);assert.equal(world.starts,2);
+ }finally{runtime.close();await x.executionTask;}
+});
+test('pending selector stays single flight after action completion',async()=>{
+ let resolve!:(d:Supervision)=>void,calls=0;
+ const {world,runtime,x}=fixture(async()=>++calls===2?new Promise<Supervision>(r=>resolve=r):answer('wait'));
+ try {await runtime.tick();const pending=runtime.tick(Date.now()+1100);world.finish();await x.executionTask;await runtime.tick(Date.now()+1200);assert.equal(calls,2);resolve(answer('continue'));await pending;}
+ finally{runtime.close();await x.executionTask;}
+});

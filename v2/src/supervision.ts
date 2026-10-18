@@ -4,7 +4,7 @@ import {intentSatisfied} from './work-intent.js';
 export type Option={id:string;action:Action;plan:Plan};
 export type Route='respond'|'clarify'|'observe'|'other'|'defer';
 export type Supervision={choice:string;confidence:number;review:'none'|'medium'|'long';routes:Record<string,Route>};
-export type SupervisorInput={options:Option[];execution:{id:number;action:Action;plan:Plan;elapsedMs:number;motor?:import('./types.js').MotorProgress;observedChanges?:unknown;interruptionNote?:string}|null;inbox:import('./social.js').ChatEvent[];goal:string|null;plan?:Plan;progress?:unknown;recentOutcome?:unknown;recovery?:unknown};
+export type SupervisorInput={options:Option[];execution:{id:number;action:Action;plan:Plan;elapsedMs:number;motor?:import('./types.js').MotorProgress;observedChanges?:unknown;interruptionNote?:string}|null;inbox:import('./social.js').ChatEvent[];goal:string|null;plan?:Plan;progress?:unknown;recentOutcome?:unknown;recentResults?:unknown[];recovery?:unknown};
 // These are executable, observed alternatives, not a hidden task curriculum.
 export function executionOptions(s:Snapshot,p:Plan):Option[]{
  if(p.intent)return observedOptions(s,p);
