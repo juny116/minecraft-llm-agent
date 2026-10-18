@@ -145,3 +145,26 @@ test('near-complete mining survives repeated ordinary stops but danger still int
  const r=new Runtime(w,b,opts,()=>{});primeExecution(r);await r.tick();await r.tick();await r.tick();await r.tick();assert.equal(w.aborts,0);
  w.state.health=18;await r.tick();assert.equal(w.aborts,1);r.close();await flush();
 });
+
+
+test('phase-changing interrupt is rejudged; a fresh stop still cancels without local mining lock',async()=>{
+ const w=new SlowWorld();let motor:any={phase:'approach',phaseElapsedMs:0,blockBroken:false};
+ (w as any).executionProgress=()=>motor;
+ let finish!:(d:Supervision)=>void,calls=0;const events:any[]=[];
+ const b=brain(async()=>{calls++;if(calls===1)return {...decision('selected'),selected:{id:'m',action:'mine',plan:{goal:'Get wood',preferred:'mine',mine:{position:{x:1,y:64,z:0},expected:'oak_log'}}}};if(calls===2)return new Promise(resolve=>finish=resolve);return decision('stop');});
+ Object.defineProperty(b,"parameterSelection",{value:true});b.plan=()=>new Promise(()=>{});b.reviewGoals=()=>new Promise(()=>{});
+ const r=new Runtime(w,b,opts,(event,data)=>events.push({event,...data}));primeExecution(r);
+ try{await r.tick();const pending=r.tick();await flush();motor.phase='digging';motor.estimatedDigMs=3000;finish(decision('stop'));await pending;
+ assert.equal(w.aborts,0);assert.ok(events.some(e=>e.reason==='execution phase changed'&&e.requestedPhase==='approach'&&e.currentPhase==='digging'));
+ await r.tick();assert.equal(w.aborts,1);assert.equal(w.maxRunning,1);
+ }finally{r.close();await flush();}
+});
+
+test('maintain response across a motor phase transition does not restart the action',async()=>{
+ const w=new SlowWorld();let phase:any='digging';(w as any).executionProgress=()=>({phase,phaseElapsedMs:10,blockBroken:phase==='collecting'});
+ let finish!:(d:Supervision)=>void,calls=0;
+ const b=brain(async()=>++calls===1?{...decision('selected'),selected:{id:'m',action:'mine',plan:{goal:'Get wood',preferred:'mine',mine:{position:{x:1,y:64,z:0},expected:'oak_log'}}}}:new Promise(resolve=>finish=resolve));
+ Object.defineProperty(b,"parameterSelection",{value:true});b.plan=()=>new Promise(()=>{});b.reviewGoals=()=>new Promise(()=>{});
+ const r=new Runtime(w,b,opts,()=>{});primeExecution(r);
+ try{await r.tick();const pending=r.tick();await flush();phase='collecting';finish(decision('continue'));await pending;assert.equal(w.starts,1);assert.equal(w.aborts,0);}finally{r.close();await flush();}
+});
