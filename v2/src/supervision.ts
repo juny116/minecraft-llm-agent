@@ -1,10 +1,11 @@
 import {candidates,type Snapshot,type Plan,type Action} from './types.js';
 import {supportsFeet} from './building.js';
 import {intentSatisfied} from './work-intent.js';
+import type {PlanningState,SelectionFeedbackStatus} from './review-lifecycle.js';
 export type Option={id:string;action:Action;plan:Plan};
 export type Route='respond'|'clarify'|'observe'|'other'|'defer';
-export type Supervision={attempt?:{action:Action;boundArguments:Record<string,unknown>;unresolvedArgument?:{name:string;availableValues:number}};selected?:Option;reason?:string;choice:string;confidence:number;review:'none'|'medium'|'long';routes:Record<string,Route>};
-export type SupervisorInput={parameterSelection?:boolean;selectionFeedback?:string;blockedInteractions?:unknown;options:Option[];execution:{id:number;action:Action;plan:Plan;elapsedMs:number;motor?:import('./types.js').MotorProgress;observedChanges?:unknown;interruptionNote?:string}|null;inbox:import('./social.js').ChatEvent[];goal:string|null;plan?:Plan;progress?:unknown;recentOutcome?:unknown;recentResults?:unknown[];recovery?:unknown};
+export type Supervision={attempt?:{action:Action;boundArguments:Record<string,unknown>;unresolvedArgument?:{name:string;availableValues:number}};selected?:Option;reason?:string;choice:string;confidence:number;review:'none'|'medium'|'long';routes:Record<string,Route>;selectionControl?:{action:string;review:'none'|'medium'|'long';argumentOutcome?:'withdrawn'|'empty_domain'}};
+export type SupervisorInput={parameterSelection?:boolean;selectionFeedback?:string;planningState?:PlanningState;selectionFeedbackStatus?:SelectionFeedbackStatus;blockedInteractions?:unknown;options:Option[];execution:{id:number;action:Action;plan:Plan;elapsedMs:number;motor?:import('./types.js').MotorProgress;observedChanges?:unknown;interruptionNote?:string}|null;inbox:import('./social.js').ChatEvent[];goal:string|null;plan?:Plan;progress?:unknown;recentOutcome?:unknown;recentResults?:unknown[];recovery?:unknown};
 // These are executable, observed alternatives, not a hidden task curriculum.
 export function executionOptions(s:Snapshot,p:Plan):Option[]{
  if(p.intent)return observedOptions(s,p);

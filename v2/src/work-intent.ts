@@ -5,6 +5,9 @@ export function intentSatisfied(intent:WorkIntent|undefined,s:Snapshot){
 }
 export function parseIntent(raw:any,parseProposal:(raw:unknown)=>Plan):Plan{
  const i=raw?.intent;
+ for(const [field,value] of [['goal',raw?.goal],['intent.description',i?.description]] as const){
+  if(typeof value==='string'&&value.length>400)throw Error(`Invalid work intent: ${field} length ${value.length} exceeds 400 characters; shorten this field while preserving the intended outcome`);
+ }
  if(typeof raw?.goal!=='string'||!raw.goal.trim()||raw.goal.length>400||!i||typeof i.description!=='string'||!i.description.trim()||i.description.length>400
  ||!Array.isArray(i.desiredInventory)||i.desiredInventory.length>8||i.desiredInventory.some((t:any)=>!t||!/^[a-z0-9_]+$/.test(t.item)||!Number.isInteger(t.count)||t.count<1||t.count>2304)
  ||!Array.isArray(i.constraints)||i.constraints.length>6||i.constraints.some((x:any)=>typeof x!=='string'||!x.trim()||x.length>200))throw Error('Invalid work intent: description, desiredInventory [{item,count}], constraints [text]');
