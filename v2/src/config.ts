@@ -13,9 +13,12 @@ export function config() {
   if (!['jev', 'llm', 'rules'].includes(mode)) throw new Error('Invalid DECISION_MODE');
   const argumentContract=process.env.JEV_ARGUMENT_CONTRACT??'legacy';
   if(!['legacy','explicit','coordinated'].includes(argumentContract))throw Error('Invalid JEV_ARGUMENT_CONTRACT');
+  const withdrawalMode=process.env.JEV_WITHDRAWAL_MODE??'joint';
+  if(!['joint','separate'].includes(withdrawalMode))throw Error('Invalid JEV_WITHDRAWAL_MODE');
   const auth = process.env.MC_AUTH ?? 'offline';
   if (!['offline', 'microsoft'].includes(auth)) throw new Error('Invalid MC_AUTH');
   return {
+    withdrawalMode:withdrawalMode as 'joint'|'separate',
     argumentContract:argumentContract as 'legacy'|'explicit'|'coordinated',
     names, mode: mode as 'jev' | 'llm' | 'rules',
     targetPolicy:process.env.TARGET_POLICY==='planner'?'planner' as const:'observed' as const,
