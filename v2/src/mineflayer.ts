@@ -1,5 +1,5 @@
 import {NavigationFailure,navigationEvidence} from './execution-evidence.js';
-import {MOVE_RADIUS,moveReached,MINE_APPROACH_RADIUS,MINE_SIGHT_APPROACH_RADIUS,MINE_PICKUP_MS,MINE_DEFAULT_DIG_MS} from './action-contracts.js';
+import {MOVE_RADIUS,moveReached,MINE_APPROACH_RADIUS,MINE_SIGHT_APPROACH_RADIUS,MINE_PICKUP_MS} from './action-contracts.js';
 import {ImportantPlaces} from './important-places.js';
 import {localNavigationTargets} from './navigation.js';
 import {tableSupportMaterial} from './building.js';
@@ -12,7 +12,7 @@ import {botMemoryLocation} from './experience-memory.js';
 import {join} from 'node:path';
 import {executeEquip} from './equipment.js';
 import {validatePickup,type PickupResult} from './pickup.js';
-import {miningResult,inventoryGains} from './mining.js';
+import {miningResult,inventoryGains,miningTiming} from './mining.js';
 import {buildingMaterial,validateBuild,validateDig,sameCell,overlapsCell,supportsFeet} from './building.js';
 import {randomUUID} from 'node:crypto';
 import {IncomingDamage} from './incoming-damage.js';
@@ -126,8 +126,8 @@ export class MineflayerWorld implements World {
     if(result.status==='finished'&&!result.inventoryGained.some(i=>i.name===result.target?.expected&&i.count>0)){result.status='failed';result.detail='No matching inventory gain observed; disappearance is not receipt';}
     return JSON.stringify(result);
   }
-  private motor?:{phase:import('./types.js').MotorProgress['phase'];at:number;estimatedDigMs?:number;blockBroken:boolean};
-  executionProgress():import('./types.js').MotorProgress|undefined{return this.motor?{phase:this.motor.phase,phaseElapsedMs:Math.max(0,Date.now()-this.motor.at),estimatedDigMs:this.motor.estimatedDigMs,blockBroken:this.motor.blockBroken}:undefined;}
+  private motor?:{phase:import('./types.js').MotorProgress['phase'];at:number;estimatedDigMs?:number;digBudgetMs?:number;estimateCapped?:boolean;blockBroken:boolean};
+  executionProgress():import('./types.js').MotorProgress|undefined{return this.motor?{phase:this.motor.phase,phaseElapsedMs:Math.max(0,Date.now()-this.motor.at),estimatedDigMs:this.motor.estimatedDigMs,digBudgetMs:this.motor.digBudgetMs,estimateCapped:this.motor.estimateCapped,estimatedRemainingMs:this.motor.phase==='digging'&&this.motor.estimatedDigMs!==undefined?Math.max(0,this.motor.estimatedDigMs-(Date.now()-this.motor.at)):undefined,blockBroken:this.motor.blockBroken}:undefined;}
   private async mineBlock(signal:AbortSignal,plan?:Plan){
     const result=miningResult(plan?.mine??null),started=Date.now();this.motor={phase:'approach',at:started,blockBroken:false};
     const totals=()=>{const out:Record<string,number>={};for(const i of this.bot.inventory.items())out[i.name]=(out[i.name]??0)+i.count;return out;};
@@ -167,8 +167,8 @@ export class MineflayerWorld implements World {
       try{if(tool)await this.bot.equip(tool,'hand');}finally{this.bot.clickWindow=original;}
       active.throwIfAborted();target=fresh();const held=this.bot.heldItem;
       result.tool=held?{name:held.name,enchants:structuredClone(held.enchants??[]),durabilityUsed:held.durabilityUsed}:null;
-      this.bot.on('itemDrop',onDrop);digStarted=Date.now();const estimate=this.bot.digTime?.(target);this.motor={phase:'digging',at:digStarted,estimatedDigMs:Number.isFinite(estimate)?estimate:undefined,blockBroken:false};
-      const clock=new AbortController(),timer=setTimeout(()=>clock.abort(new DOMException('Mining attempt budget exhausted','TimeoutError')),request.maxMs??MINE_DEFAULT_DIG_MS),timeout=clock.signal,digSignal=AbortSignal.any([active,timeout]);
+      this.bot.on('itemDrop',onDrop);digStarted=Date.now();const timing=miningTiming(this.bot.digTime?.(target));Object.assign(result,timing);this.motor={phase:'digging',at:digStarted,...timing,blockBroken:false};
+      const clock=new AbortController(),timer=setTimeout(()=>clock.abort(new DOMException('Mining attempt budget exhausted','TimeoutError')),timing.digBudgetMs),timeout=clock.signal,digSignal=AbortSignal.any([active,timeout]);
       let stopDig:()=>void=()=>{};
       const interrupted=new Promise<never>((_,reject)=>{stopDig=()=>{this.bot.stopDigging();reject(digSignal.reason);};if(digSignal.aborted)stopDig();else digSignal.addEventListener('abort',stopDig,{once:true});});
       try{const face=this.miningFace(target);if(!face)throw Error('Block has no currently visible mining face');await Promise.race([this.bot.dig(target,false,face),interrupted]);}catch(error){

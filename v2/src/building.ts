@@ -1,6 +1,6 @@
 import type {Position} from './vision.js';
 export type BuildRequest={item:string;position:Position;reference:Position};
-export type DigRequest={position:Position;expected:string;maxMs?:number;keepTool?:boolean;tool?:string;toolSlot?:number};
+export type DigRequest={position:Position;expected:string;/** @deprecated Historical request only; executor ignores this duration. */maxMs?:number;keepTool?:boolean;tool?:string;toolSlot?:number};
 export const sameCell=(a:Position,b:Position)=>a.x===b.x&&a.y===b.y&&a.z===b.z;
 export function validCell(p:Position){return !!p&&[p.x,p.y,p.z].every(Number.isSafeInteger)&&Math.abs(p.x)<=30000000&&Math.abs(p.z)<=30000000&&p.y>=-64&&p.y<=319;}
 // Ordinary construction materials; special multi-block, falling, fluid and interactive placements need separate executors.

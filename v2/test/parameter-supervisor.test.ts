@@ -10,7 +10,7 @@ function responder(action:string,select:Record<string,(v:any)=>boolean>={},recor
  let choice=name==='action'?action:name==='review'?'none':name.startsWith('message_')?'defer':undefined;
  if(!choice){const entries=Object.entries(q.criteria).filter(([k])=>k!=='none');const predicate=select[name]??(()=>true);choice=entries.find(([k,v])=>typeof v==='string'?(k.startsWith('group_')?JSON.parse(v).some((x:any)=>predicate(x.value)):predicate(JSON.parse(v))):(k.startsWith('group_')?v.values!.some(predicate):predicate(v.value)))?.[0]??'none';}
  return [name,{type:'choice',choice,confidence:.1}];}));};}
-test('JEV selects previously truncated block, tool and duration without goal filtering',async()=>{const s=fixture();s.health=3;const d=await parameterSupervise(s,input,responder('mine',{block:b=>b.position.x===39,tool:t=>t.slot===11,attemptSeconds:n=>n===90}));assert.equal(d.selected?.plan.mine?.position.x,39);assert.equal(d.selected?.plan.mine?.tool,'iron_sword');assert.equal(d.selected?.plan.mine?.maxMs,90000);assert.ok(candidates(s,d.selected!.plan).includes('mine'));});
+test('JEV selects previously truncated block and tool without a duration choice or goal filtering',async()=>{const s=fixture();s.health=3;const d=await parameterSupervise(s,input,responder('mine',{block:b=>b.position.x===39,tool:t=>t.slot===11,attemptSeconds:()=>{throw Error('Duration must not be requested');}}));assert.equal(d.selected?.plan.mine?.position.x,39);assert.equal(d.selected?.plan.mine?.tool,'iron_sword');assert.equal(d.selected?.plan.mine?.maxMs,undefined);assert.ok(candidates(s,d.selected!.plan).includes('mine'));});
 test('craft output beyond former eight-entry cap and non-unit count are model choices',async()=>{const d=await parameterSupervise(fixture(),input,responder('craft',{recipeOutput:v=>v==='recipe_19',recipeExecutions:n=>n===7}));assert.deepEqual(d.selected?.plan.craft,{item:'recipe_19',count:7});});
 test('placement needs no LLM proposal; item and observed site are selected by JEV',async()=>{const d=await parameterSupervise(fixture(),input,responder('place_block'));assert.equal(d.selected?.plan.build?.item,'chest');assert.deepEqual(d.selected?.plan.build?.position,{x:2,y:64,z:0});});
 test('all parameterized skills resolve observed arguments',async()=>{for(const action of ['move','place_table','pickup','equip','eat','follow','attack','flee','look','give','inspect_container','deposit','withdraw']){const d=await parameterSupervise(fixture(),input,responder(action));assert.equal(d.selected?.action,action,action);}});
@@ -122,4 +122,14 @@ test('direct choice does not invent missing targets, accept withdrawal, or repla
  await assert.rejects(directSelection(async()=>({x:{type:'choice',choice:'none',confidence:1}}))({x:{type:'choice',instructions:'',criteria:{none:'withdraw',value_0:'0'}}},{argumentName:'x'}),/Invalid direct/);
  const calls:any[]=[];const d=await parameterSupervise(fixture(),input,directSelection(async(q,c)=>{calls.push({q,c});return Object.fromEntries(Object.keys(q).map(k=>[k,{type:'choice',confidence:.01,choice:k==='action'?'look':k==='review'?'none':k==='yawDegrees'?(q[k].criteria.group_2?'group_2':'value_90'):'value_90'}]));}),'coordinated');
  assert.deepEqual(d.selected?.plan.look,{yaw:Math.PI/2,pitch:0});assert.equal(calls.length,4);assert.equal(calls.at(-1).c.boundArguments.yawDegrees,90);assert.match(calls.at(-1).c.argumentSemantics.pitchDegrees,/together/);
+});
+
+test('JEV wire preserves mining time estimates separately from observed completion',async()=>{
+ const s=fixture(),motor={phase:'digging' as const,phaseElapsedMs:1100,estimatedDigMs:2250,estimatedRemainingMs:1150,digBudgetMs:5375,estimateCapped:false,blockBroken:false};let seen=false;
+ const api=new ApiBrain({...config(),mode:'jev',targetPolicy:'observed',withdrawalMode:'direct',jevKey:'test'},new Budget(10,1),(async(_u:any,init:any)=>{
+  const body=JSON.parse(init.body),wire=decodeReferenceRequest(body.state,body.questions);assert.deepEqual(wire.context.execution.motor,motor);seen=true;
+  return Response.json({answers:Object.fromEntries(Object.keys(wire.questions).map(k=>[k,{type:'choice',choice:k==='action'?'continue':'none',confidence:1}])),usage:{input_tokens:1,output_tokens:0}});
+ }) as typeof fetch);
+ const out=await api.supervise(s,{...input,execution:{id:1,action:'mine',plan:{goal:'mine',preferred:'mine'},elapsedMs:1300,motor}},new AbortController().signal);
+ assert.equal(seen,true);assert.equal(out.choice,'continue');
 });

@@ -1,3 +1,4 @@
+import {MAX_DIG_BUDGET_MS} from './mining.js';
 import {NavigationFailure,executionEvidence,type NavigationEvidence} from './execution-evidence.js';
 import {ImportantPlaces,placeEvidence} from './important-places.js';
 import {viewChange} from './view-change.js';
@@ -227,7 +228,7 @@ export class Runtime {
   const action=decision.action,before=this.world.snapshot(),context=this.planning,version=this.planVersion,plan=structuredClone(executionPlan??this.plan),startedAt=Date.now();
   this.actionPending=true;this.activeAction=action;
   const controller=new AbortController();this.actionController=controller;
-  const signal=AbortSignal.any([controller.signal,this.lifetime.signal,AbortSignal.timeout(action==='mine'?(plan.mine?.maxMs??30000)+this.options.actionMs+2500:this.options.actionMs)]);
+  const signal=AbortSignal.any([controller.signal,this.lifetime.signal,AbortSignal.timeout(action==='mine'?MAX_DIG_BUDGET_MS+this.options.actionMs+5000:this.options.actionMs)]);
   let outcome:Outcome='failed',result='Action failed';let navigation:NavigationEvidence|undefined;
   try{result=await this.world.execute(action,signal,plan);outcome=signal.aborted?'cancelled':classify(action,result);}
   catch(e){if(e instanceof NavigationFailure)navigation=e.evidence;outcome=signal.aborted&&signal.reason?.name!=='TimeoutError'?'cancelled':'failed';

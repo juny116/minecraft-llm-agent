@@ -40,7 +40,7 @@ export type Snapshot = {
   messages: string[];
   recipeBook: { initialized: boolean; unlocked: string[] };
 };
-export type MotorProgress={phase:'approach'|'prepare'|'digging'|'collecting';phaseElapsedMs:number;estimatedDigMs?:number;blockBroken:boolean};
+export type MotorProgress={phase:'approach'|'prepare'|'digging'|'collecting';phaseElapsedMs:number;estimatedDigMs?:number;estimatedRemainingMs?:number;digBudgetMs?:number;estimateCapped?:boolean;blockBroken:boolean};
 export interface World {
  importantPlaces?:import('./important-places.js').ImportantPlaces;
   executionProgress?():MotorProgress|undefined;

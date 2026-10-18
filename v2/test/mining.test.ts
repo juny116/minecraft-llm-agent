@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
 import {MineflayerWorld} from '../src/mineflayer.js';
 import {classify,completed} from '../src/planning.js';
+import {miningTiming} from '../src/mining.js';
 import {validateDig} from '../src/building.js';
 import {actions,candidates,type Plan} from '../src/types.js';
 import {MockWorld} from '../src/mock.js';
@@ -28,7 +29,7 @@ test('seen drop with unreachable pickup records no gain, not no drop',async()=>{
  const f=setup();f.bot.dig=async()=>{f.breakBlock();f.drop();};f.w.navigate=async()=>{throw Error('No path');};const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.blockBroken,true);assert.equal(r.dropObservation,'observed_near_target');assert.deepEqual(r.inventoryGained,[]);assert.equal(r.pickup,'interrupted');
 });
 test('timeout is incomplete within budget, never an unmineable verdict; tool and elapsed attempt survive',async()=>{
- const f=setup();f.bot.dig=()=>new Promise(()=>{});const r=JSON.parse(await f.w.execute('mine',signal(),{...p,mine:{...p.mine!,maxMs:1000}}));assert.equal(r.blockBroken,false);assert.equal(r.status,'time_limit');assert.ok(r.attemptMs>=900);assert.equal(classify('mine',JSON.stringify(r)),'partial');assert.ok(f.stats().stops>0);
+ const f=setup();(f.bot as any).digTime=()=>0;f.bot.dig=()=>new Promise(()=>{});const r=JSON.parse(await f.w.execute('mine',signal(),{...p,mine:{...p.mine!,maxMs:1000}}));assert.equal(r.blockBroken,false);assert.equal(r.status,'time_limit');assert.ok(r.attemptMs>=900);assert.equal(classify('mine',JSON.stringify(r)),'partial');assert.ok(f.stats().stops>0);
 });
 test('damage stops mining and preserves break evidence if block already disappeared',async()=>{
  const f=setup();f.bot.dig=async()=>{f.breakBlock();f.bot.health=19;f.bot.emit('health');};const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.blockBroken,true);assert.equal(r.status,'cancelled');assert.equal(r.pickup,'not_attempted');assert.equal(f.bot.listenerCount('health'),0);
@@ -93,4 +94,20 @@ test('confirmed ray face is passed explicitly to digging and occlusion still rej
 test('mining uses the previously verified face instead of the independent library raycast heuristic',async()=>{
  const f=setup();f.bot.dig=(async(_target:any,_look:any,face:any)=>{assert.deepEqual(face,new V(0,0,1));f.breakBlock();}) as any;
  const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.blockBroken,true);
+});
+
+test('dig watchdog scales with estimated tool/state time and bounds unknown estimates',()=>{
+ assert.equal(miningTiming(1150).digBudgetMs,3725);
+ assert.equal(miningTiming(250000).digBudgetMs,377000);
+ assert.equal(miningTiming(Infinity).digBudgetMs,30000);
+ assert.equal(miningTiming(NaN).estimatedDigMs,undefined);
+ assert.equal(miningTiming(600000).estimateCapped,true);
+ assert.equal(miningTiming(600000).digBudgetMs,600000);
+});
+test('executor estimates after tool equip and survives old one-second request while exposing progress',async()=>{
+ const f=setup();let saw=false;
+ (f.bot as any).digTime=()=>{assert.equal(f.bot.heldItem.name,'iron_pickaxe');return 1200;};
+ f.bot.dig=async()=>{await new Promise(r=>setTimeout(r,1100));const progress=f.w.executionProgress();assert.equal(progress.phase,'digging');assert.equal(progress.digBudgetMs,3800);assert.ok(progress.estimatedRemainingMs<200);saw=true;f.breakBlock();};
+ const result=JSON.parse(await f.w.execute('mine',signal(),{...p,mine:{...p.mine!,maxMs:1000}}));
+ assert.equal(saw,true);assert.equal(result.blockBroken,true);assert.equal(result.digBudgetMs,3800);assert.equal(result.estimatedDigMs,1200);assert.equal(f.w.executionProgress(),undefined);
 });
