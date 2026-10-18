@@ -26,3 +26,14 @@ test('structured navigation failure survives runtime error sanitization into act
  const r=new Runtime(w,new MockBrain(),{planMs:60000,actionMs:1000,minConfidence:.5},()=>{});
  try{await (r as any).run({action:'move',confidence:1},['move'],'selector',w.snapshot(),{goal:'inspect',preferred:'move',destination:d.target});const record=r.planning.recentActions.at(-1)!;assert.equal(record.outcome,'failed');assert.deepEqual(record.navigation,d);assert.match(record.result,/Destination not reached/);assert.deepEqual(planningInput(r.planning)?.executionEvidence.failedMoves[0].navigation,d);}finally{r.close();}
 });
+
+
+test('completed approach evidence keeps exact arrival and radius without certifying safety or treating cancellations as success',()=>{
+ const make=(id:number,outcome:string)=>({id,endedAt:id,decision:{action:'move'},executionPlan:{destination:{x:4,y:64,z:0}},outcome,before:{position:{x:0,y:64,z:0},health:20},after:{position:{x:2,y:64,z:0},health:18}}as any);
+ const records=[make(1,'succeeded'),make(2,'cancelled'),make(3,'failed')];
+ const summary=executionEvidence(records);assert.equal(summary.completedMoves.length,1);assert.equal(summary.completedMoves[0].recordId,1);assert.equal(summary.completedMoves[0].arrivalRadius,2);assert.deepEqual(summary.completedMoves[0].arrivedAt,{x:2,y:64,z:0});assert.equal(summary.completedMoves[0].healthDelta,-2);
+ assert.match(summary.movementMeaning,/not establish exact target occupancy/);assert.equal(summary.failedMoves.length,1);
+ assert.equal(executionEvidence(Array.from({length:10},(_,i)=>make(i,'succeeded'))).completedMoves.length,6);
+ assert.deepEqual(planningInput({recentActions:records}as any)?.executionEvidence.completedMoves,summary.completedMoves);
+ assert.deepEqual(selectorContext(new MockWorld().snapshot(),{options:[],execution:null,inbox:[],goal:null,executionEvidence:summary},{}).executionEvidence?.completedMoves,summary.completedMoves);
+});

@@ -1,3 +1,4 @@
+import {MOVE_RADIUS} from './action-contracts.js';
 import type {ActionRecord} from './planning.js';
 import type {Position,SeenBlock} from './vision.js';
 export function navigationEvidence(reason:string,position:Position,target:Position,radius:number,path:any,visible:SeenBlock[],scan:boolean){
@@ -20,5 +21,7 @@ export function executionEvidence(records:ActionRecord[]){
  for(const r of records){if(r.decision.action!=='move'||r.outcome!=='failed'||!r.executionPlan?.destination)continue;
   const key=JSON.stringify(r.executionPlan.destination),g=groups.get(key)??{target:r.executionPlan.destination,count:0,ids:[]};g.count++;g.ids.push(r.id);g.lastAt=r.endedAt;g.lastResult=r.result;g.navigation=r.navigation;g.lastPosition=r.after.position;groups.set(key,g);}
  return {look:lookCount?{completedConsecutiveSameView:lookCount,recordIds:ids,lastRequested:records.at(-1)?.executionPlan?.look,summary:`Completed ${lookCount} consecutive looks at the same requested orientation; camera changed at most one degree and no blocks entered or left the view.`}:null,
+  completedMoves:records.filter(r=>r.decision.action==='move'&&r.outcome==='succeeded'&&r.executionPlan?.destination&&r.before?.position&&r.after?.position).slice(-6).map(r=>({recordId:r.id,endedAt:r.endedAt,target:r.executionPlan!.destination,arrivalRadius:MOVE_RADIUS,from:r.before.position,arrivedAt:r.after.position,healthDelta:r.after.health-r.before.health})),
+  movementMeaning:'Completed moves establish arrival within the stated radius from the recorded start at that time. They do not establish exact target occupancy, mining reach, an entire safe route, a return path, or absence of transient damage. Failed and cancelled attempts do not erase completed approaches. Health delta is net change, not proof of no damage.',
   failedMoves:[...groups.values()],scope:'Retained action journal only; counts are not lifetime totals. Repeated observations may still be intentional monitoring. Check whether there is an expected event or changed condition; otherwise consider a different approach. Facts do not prohibit any action.'};
 }
