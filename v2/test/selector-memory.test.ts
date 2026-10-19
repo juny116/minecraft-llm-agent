@@ -24,8 +24,8 @@ test('actual JEV receives all selected places but not raw annotation evidence',a
  const {s,ev}=evidence(),m=new ImportantPlaces();for(const e of ev)m.apply([{evidenceId:e.id,label:'Landmark',reason:'Useful'}],ev);s.importantPlaces=m.snapshot();s.placeEvidence=ev;
  const b=new ApiBrain({...config(),mode:'jev',jevKey:'test',llmKey:'test'},new Budget(1,1),(async(_url:any,init:any)=>{
   const body=JSON.parse(init.body);assert.equal(body.state.rememberedPlaces.length,20);assert.equal(body.state.observation.placeEvidence,undefined);assert.equal(body.state.observation.importantPlaces,undefined);
-  return Response.json({answers:{action:{type:'choice',choice:'wait',confidence:1},review:{type:'choice',choice:'none',confidence:1}},usage:{input_tokens:1,output_tokens:0}});
- }) as typeof fetch);await b.supervise(s,{options:[],execution:null,inbox:[],goal:null},new AbortController().signal);
+  return Response.json({answers:{action:{type:'choice',choice:'option_look',confidence:1},review:{type:'choice',choice:'none',confidence:1}},usage:{input_tokens:1,output_tokens:0}});
+ }) as typeof fetch);await b.supervise(s,{options:[{id:'option_look',action:'look',plan:{goal:'observe',preferred:'look'}}],execution:null,inbox:[],goal:null},new AbortController().signal);
 });
 test('medium LLM receives place evidence and returns annotation patches without mandatory places',async()=>{
  const {s,ev}=evidence();s.placeEvidence=ev;s.importantPlaces=[];

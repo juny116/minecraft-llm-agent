@@ -17,7 +17,14 @@ test('all parameterized skills resolve observed arguments',async()=>{for(const a
 test('target enemy and followed player are model choices rather than nearest/configured',async()=>{const d=await parameterSupervise(fixture(),input,responder('attack',{enemy:e=>e.id===2}));assert.equal(d.selected?.plan.targetEntityId,2);const f=await parameterSupervise(fixture(),input,responder('follow'));assert.equal(f.selected?.plan.followPlayer,'Bob');});
 test('hierarchical transport keeps every argument reachable with at most 255 choices',async()=>{const calls:any[]=[];const v=await selectValue('number',Array.from({length:1000},(_,i)=>i),responder('wait',{number:n=>n===999},calls),{});assert.equal(v,999);assert.equal(calls.length,2);for(const c of calls)assert.ok(Object.keys(c.questions.number.criteria).length<=255);});
 test('missing argument domain is explicit; no locally chosen fallback execution',async()=>{const s=fixture();s.placementSites=[];const d=await parameterSupervise(s,input,responder('place_block'));assert.equal(d.choice,'unresolved');assert.equal(d.selected,undefined);assert.match(d.reason!,/placementSite/);assert.equal(d.review,'medium');});
-test('model-selected wait duration and maintain do not require unrelated arguments',async()=>{const calls:any[]=[];const d=await parameterSupervise(fixture(),input,responder('wait',{waitMilliseconds:n=>n===1700},calls));assert.equal(d.selected?.plan.waitMs,1700);const c=await parameterSupervise(fixture(),{...input,execution:{id:1,action:'mine',plan:{goal:'wood',preferred:'mine'},elapsedMs:1}},responder('continue',{},calls));assert.equal(c.choice,'continue');assert.equal(calls.length,3);});
+test('intentional wait is absent; continue and stop require running work and no duration call',async()=>{
+ for(const contract of ['legacy','explicit','coordinated'] as const){
+  await assert.rejects(parameterSupervise(fixture(),input,responder('wait'),contract),/Invalid parameter selection/);
+  const calls:any[]=[];const running={...input,execution:{id:1,action:'mine' as const,plan:{goal:'wood',preferred:'mine' as const},elapsedMs:1}};
+  for(const action of ['continue','stop']){const d=await parameterSupervise(fixture(),running,responder(action,{},calls),contract);assert.equal(d.choice,action);assert.equal(d.selected,undefined);}
+  assert.equal(calls.length,2);for(const c of calls){assert.ok(!('wait' in c.questions.action.criteria));assert.ok(!('idle' in c.questions.action.criteria));}
+ }
+});
 test('actual API path performs action then conditional argument selection',async()=>{const s=fixture(),calls:any[]=[],respond=responder('craft',{recipeOutput:v=>v==='recipe_19',recipeExecutions:n=>n===4},calls);const b=new ApiBrain({...config(),mode:'jev',targetPolicy:'observed',jevKey:'test',llmKey:'test'},new Budget(20,2),(async(_url:any,init:any)=>{const p=JSON.parse(init.body);return Response.json({answers:await respond(decodeReferenceRequest(p.state,p.questions).questions,decodeReferenceRequest(p.state,p.questions).context),usage:{input_tokens:1,output_tokens:0}});}) as typeof fetch);assert.equal(b.parameterSelection,true);const d=await b.supervise(s,input,new AbortController().signal);assert.equal(d.selected?.plan.craft?.count,4);assert.equal(calls.length,3);assert.equal(calls[2].context.boundArguments.recipeOutput,'recipe_19');});
 test('runtime applies selected argument plan directly and switches without three confirmations',async()=>{
  class W extends MockWorld{starts:string[]=[];override async execute(a:any,signal:AbortSignal){this.starts.push(a);await delay(10000,undefined,{signal});return 'done';}}
@@ -111,9 +118,9 @@ test('runtime provider separates withdrawal while preserving coordinated review 
 
 import {directSelection} from '../src/direct-selection.js';
 test('direct selection applies the same no-extra-approval contract to all 17 actions',async()=>{
- for(const action of ['mine','move','craft','place_block','place_table','pickup','equip','eat','follow','attack','flee','look','give','inspect_container','deposit','withdraw','wait']){
+ for(const action of ['mine','move','craft','place_block','place_table','pickup','equip','eat','follow','attack','flee','look','give','inspect_container','deposit','withdraw']){
   const calls:any[]=[];const result=await parameterSupervise(fixture(),input,directSelection(responder(action,{},calls)));
-  assert.equal(result.selected?.action,action==='wait'?'idle':action);
+  assert.equal(result.selected?.action,action);
   for(const call of calls)if(call.context.argumentName){assert.equal(call.questions.bindingDecision,undefined);for(const q of Object.values(call.questions)as any[]){assert.equal(q.criteria.none,undefined);assert.equal(q.criteria.revise,undefined);}}
  }
 });
@@ -132,4 +139,22 @@ test('JEV wire preserves mining time estimates separately from observed completi
  }) as typeof fetch);
  const out=await api.supervise(s,{...input,execution:{id:1,action:'mine',plan:{goal:'mine',preferred:'mine'},elapsedMs:1300,motor}},new AbortController().signal);
  assert.equal(seen,true);assert.equal(out.choice,'continue');
+});
+
+test('runtime stop cancels work without idle or automatic replacement; stale stop cannot cancel a new phase',async()=>{
+ for(const stale of [false,true]){
+  class W extends MockWorld{starts:string[]=[];phase:'digging'|'collecting'='digging';executionProgress(){return {phase:this.phase,phaseElapsedMs:1,blockBroken:false};}override async execute(a:any,signal:AbortSignal){this.starts.push(a);await delay(10000,undefined,{signal});return 'done';}}
+  const w=new W();let n=0;const brain:Brain={parameterSelection:true,choose:new MockBrain().choose,plan:()=>new Promise(()=>{}),supervise:async()=>{if(++n===1)return {choice:'selected',confidence:1,review:'none',routes:{},selected:{id:'mine',action:'mine',plan:{goal:'wood',preferred:'mine',modelSelected:true,mine:{position:{x:1,y:64,z:0},expected:'oak_log',keepTool:true}}}};if(stale)w.phase='collecting';return {choice:'stop',confidence:1,review:'none',routes:{}};}};
+  const runtime=new Runtime(w,brain,{planMs:30000,actionMs:10000,minConfidence:0,selectorMs:0},()=>{}),r=runtime as any;r.lastReady=true;r.lastLifeKey='true';
+  try{await runtime.tick();await runtime.tick();assert.deepEqual(w.starts,['mine']);assert.equal(r.actionPending,stale);assert.equal(r.supervisorUrgent,true);}finally{runtime.close();await r.executionTask;}
+ }
+});
+
+test('runtime rejects legacy wait and explicit idle without forcing replacement work',async()=>{
+ for(const response of [{choice:'wait'},{choice:'selected',selected:{id:'old-idle',action:'idle' as const,plan:{goal:'wait',preferred:'idle' as const,waitMs:10000}}}]){
+  class W extends MockWorld{starts=0;override async execute(){this.starts++;return 'unexpected';}}
+  const w=new W();const brain:Brain={parameterSelection:true,choose:new MockBrain().choose,plan:()=>new Promise(()=>{}),supervise:async()=>({...response,confidence:1,review:'none',routes:{}})};
+  const events:any[]=[];const runtime=new Runtime(w,brain,{planMs:30000,actionMs:10000,minConfidence:0,selectorMs:0},(event,data)=>events.push({event,data}));
+  try{await runtime.tick();assert.equal(w.starts,0);assert.ok(events.some(e=>e.data?.reason==='intentional idle is not a selectable action'));}finally{runtime.close();}
+ }
 });

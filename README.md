@@ -18,7 +18,7 @@
 
 | 범주 | 액션 |
 |---|---|
-| 관찰·이동 | `look`, `move`, `follow`, `idle` |
+| 관찰·이동 | `look`, `move`, `follow` |
 | 채집·건축 | `mine`, `pickup`, `place_block`, `place_table` |
 | 제작·보관 | `craft`, `inspect_container`, `deposit`, `withdraw` |
 | 생존·전투 | `eat`, `equip`, `attack`, `flee` |

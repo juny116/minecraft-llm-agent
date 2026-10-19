@@ -15,7 +15,7 @@ test('continuous selector keeps same execution while long and medium reasoning a
  primeExecution(r);await r.tick();await r.tick();await r.tick();assert.equal(calls,3);assert.equal(w.starts,1);assert.equal(w.aborts,0);r.close();await flush();assert.equal(w.running,0);
 });
 test('switch aborts and joins old executor before starting another; action count unchanged',async()=>{
- const w=new SlowWorld();let call=0;const r=new Runtime(w,brain(async(_s,i)=>decision(++call===1?i.options.find(o=>o.action==='mine')!.id:'stop')),opts,()=>{});
+ const w=new SlowWorld();let call=0;const r=new Runtime(w,brain(async(_s,i)=>decision(++call===1?i.options.find(o=>o.action==='mine')!.id:i.options.find(o=>o.action==='look')!.id)),opts,()=>{});
  primeExecution(r);await r.tick();await r.tick();await r.tick();await r.tick();assert.equal(w.starts,2);assert.equal(w.aborts,1);assert.equal(w.maxRunning,1);assert.equal(actions.length,17);r.close();await flush();
 });
 test('pending supervisor is never duplicated and stale threat response cannot switch',async()=>{
@@ -117,7 +117,7 @@ test('recent heard partner permits proactive dialogue outside current camera vie
 });
 
 test('transient preference switches do not cancel useful work while danger bypasses confirmation',async()=>{
- const w=new SlowWorld();let n=0;const b=brain(async(_s,i)=>decision(++n===1?i.options.find(o=>o.action==='mine')!.id:n===3?'continue':'stop'));const rt=new Runtime(w,b,opts,()=>{});
+ const w=new SlowWorld();let n=0;const b=brain(async(_s,i)=>decision(++n===1?i.options.find(o=>o.action==='mine')!.id:n===3?'continue':i.options.find(o=>o.action==='look')!.id));const rt=new Runtime(w,b,opts,()=>{});
  primeExecution(rt);await rt.tick();await rt.tick();await rt.tick();await rt.tick();assert.equal(w.aborts,0);
  w.state.enemies=[{id:9,kind:'zombie',position:{x:1,y:64,z:0},distance:1}];await rt.tick();assert.equal(w.aborts,1);rt.close();await flush();
 });
@@ -133,14 +133,14 @@ test('unrelated remembered treetops are not automatic movement proposals',()=>{
 
 test('hunger permits an urgent switch TO eating, not an urgent switch AWAY from eating',async()=>{
  const w=new SlowWorld();w.state.food=7;w.state.canEat=true;let n=0;
- const b=brain(async(_s,i)=>decision(++n===1?i.options.find(o=>o.action==='mine')!.id:n===2?i.options.find(o=>o.action==='eat')!.id:'stop'));
+ const b=brain(async(_s,i)=>decision(++n===1?i.options.find(o=>o.action==='mine')!.id:n===2?i.options.find(o=>o.action==='eat')!.id:i.options.find(o=>o.action==='look')!.id));
  const r=new Runtime(w,b,opts,()=>{});primeExecution(r);
  await r.tick();assert.equal(w.aborts,0);await r.tick();assert.equal(w.aborts,1);assert.equal(r.executionStatus.activeAction,'eat');
  await r.tick();assert.equal(w.aborts,1);assert.equal(r.executionStatus.activeAction,'eat');r.close();await flush();
 });
 
-test('near-complete mining survives repeated ordinary stops but danger still interrupts',async()=>{
- const w=new SlowWorld();let n=0;const b=brain(async(_s,i)=>decision(++n===1?i.options.find(o=>o.action==='mine')!.id:'stop'));b.reviewGoals=()=>new Promise(()=>{});b.plan=()=>new Promise(()=>{});
+test('near-complete mining survives repeated ordinary alternative proposals but danger still interrupts',async()=>{
+ const w=new SlowWorld();let n=0;const b=brain(async(_s,i)=>decision(++n===1?i.options.find(o=>o.action==='mine')!.id:i.options.find(o=>o.action==='look')!.id));b.reviewGoals=()=>new Promise(()=>{});b.plan=()=>new Promise(()=>{});
  (w as any).executionProgress=()=>({phase:'digging',phaseElapsedMs:2800,estimatedDigMs:3000,blockBroken:false});
  const r=new Runtime(w,b,opts,()=>{});primeExecution(r);await r.tick();await r.tick();await r.tick();await r.tick();assert.equal(w.aborts,0);
  w.state.health=18;await r.tick();assert.equal(w.aborts,1);r.close();await flush();

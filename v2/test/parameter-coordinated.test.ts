@@ -17,18 +17,18 @@ function fixture(){
  return s;
 }
 function answers(action:string,review='none',argument='revise'):Ask{
- return async(q,c)=>Object.fromEntries(Object.keys(q).map(k=>[k,{type:'choice',choice:c.argumentName?argument:k==='action'?action:review,confidence:.01}]));
+ return async(q,c)=>Object.fromEntries(Object.keys(q).map(k=>[k,{type:'choice',choice:c.argumentName?(argument==='value_0'&&!q[k].criteria.value_0?'group_0':argument):k==='action'?action:review,confidence:.01}]));
 }
 
-test('coordinated separates planning from action while retaining every game action and wait',async()=>{
+test('coordinated separates planning from action while retaining every non-idle game action',async()=>{
  let menu:string[]=[];
  const d=await parameterSupervise(fixture(),input,async(q,c)=>{
   if(!c.argumentName){menu=Object.keys(q.action.criteria);assert.ok(q.review);assert.match(q.action.instructions,/does not suspend action selection/);}
-  return answers('wait','medium','value_16')(q,c);
+  return answers('look','medium','value_0')(q,c);
  },'coordinated');
- assert.deepEqual(menu,[...actions.filter(a=>a!=='idle'),'wait']);
- assert.equal(d.selected?.action,'idle');assert.equal(d.selected?.plan.waitMs,1700);
- assert.equal(d.review,'medium');assert.deepEqual(d.selectionControl,{action:'wait',review:'medium'});
+ assert.deepEqual(menu,actions.filter(a=>a!=='idle'));
+ assert.equal(d.selected?.action,'look');assert.equal(d.selected?.plan.waitMs,undefined);
+ assert.equal(d.review,'medium');assert.deepEqual(d.selectionControl,{action:'look',review:'medium'});
 });
 
 test('coordinated allows continue and stop only for existing execution',async()=>{
@@ -49,9 +49,8 @@ test('argument withdrawal preserves independent review choice including no revie
  }
 });
 
-test('wait duration withdrawal and empty argument domains do not synthesize planning requests',async()=>{
- const wait=await parameterSupervise(fixture(),input,answers('wait'),'coordinated');
- assert.equal(wait.choice,'unresolved');assert.equal(wait.review,'none');assert.equal(wait.selectionControl?.argumentOutcome,'withdrawn');
+test('removed wait is rejected and empty argument domains do not synthesize planning requests',async()=>{
+ await assert.rejects(parameterSupervise(fixture(),input,answers('wait'),'coordinated'),/Invalid parameter selection/);
  const s=fixture();s.placeableItems=[];
  const empty=await parameterSupervise(s,input,answers('place_block'),'coordinated');
  assert.equal(empty.choice,'unresolved');assert.equal(empty.review,'none');assert.equal(empty.selectionControl?.argumentOutcome,'empty_domain');
@@ -95,7 +94,7 @@ test('coordinated API input carries lifecycle evidence and removes synthetic pre
  const selectionFeedbackStatus={history:[],total:0,omittedHistoryCount:0};
  const b=new ApiBrain({...config(),mode:'jev',targetPolicy:'observed',argumentContract:'coordinated',jevKey:'test',llmKey:'test'},new Budget(10,1),(async(_url:any,init:any)=>{
   const body=JSON.parse(init.body);captured.push(body);
-  return Response.json({answers:await answers('wait','none','value_0')(body.questions,decodeJevState(body.state)),usage:{input_tokens:1,output_tokens:0}});
+  return Response.json({answers:await answers('look','none','value_0')(body.questions,decodeJevState(body.state)),usage:{input_tokens:1,output_tokens:0}});
  }) as typeof fetch);
  await b.supervise(fixture(),{...input,plan:intent(),planningState,selectionFeedbackStatus},new AbortController().signal);
  const state=decodeJevState(captured[0].state);

@@ -3,7 +3,7 @@ import type {Ask,Question} from './parameter-supervisor.js';
 export function directSelection(ask:Ask):Ask{return async(questions,context)=>{
  const changed=structuredClone(questions);
  if(!context.argumentName){
-  if(changed.action)changed.action.instructions+=' Selecting an action commits to choosing its arguments; there is no separate approval call. Use wait, continue or stop at this action decision when appropriate. Execution still checks fresh physical conditions.';
+  if(changed.action)changed.action.instructions+=' Selecting an action commits to choosing its arguments; there is no separate approval call. When execution is running, continue maintains it and stop cancels it without a timed wait. No idle/wait action is offered. Execution still checks fresh physical conditions.';
   return ask(changed,{...context,selectionContract:'direct',...(context.capabilityFacts?{capabilityFacts:{...(context.capabilityFacts as object),note:'Observed capabilities are not objectives. Choose the action, then all its arguments; no additional model approval is requested.'}}:{})});
  }
  for(const q of Object.values(changed)){

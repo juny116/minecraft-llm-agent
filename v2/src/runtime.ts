@@ -408,10 +408,17 @@ export class Runtime {
    // Keep failures that occurred after an in-flight planner's evidence snapshot.
    if(d.choice==='unresolved'&&d.reason!=='Model requested planning'&&(d.attempt||!this.selectionFeedback))this.rememberSelectionFeedback(JSON.stringify({kind:'unexecuted_selector_decision',reason:d.reason,...(d.attempt?{attempt:d.attempt}:{}),at:Date.now(),note:'No action executed. This is a model selection outcome, not proof that the skill or target is physically impossible.'}),reviewBasis);
    if(d.review==='long')this.longRequested=true;else if(d.review==='medium'){this.requestSelectorReview({...reviewBasis,feedbackVersion:this.reviewLifecycle.basis(this.planVersion).feedbackVersion});if(!this.longGoal)this.longRequested=true;}
-   if((d.choice==='continue'||d.choice==='wait'&&input.execution)&&!this.actionPending){this.pendingSwitch=undefined;this.supervisorUrgent=true;this.log('decision_discarded',{requestId,executionId:execId,reason:'execution already finished'});return;}
-   if(d.choice==='continue'||d.choice==='wait'&&this.actionPending){this.pendingSwitch=undefined;this.lastSelection={action:'continue',at:Date.now()};this.log('execution_continue',{executionId:execId});return;}
+   if(d.choice==='continue'&&!this.actionPending){this.pendingSwitch=undefined;this.supervisorUrgent=true;this.log('decision_discarded',{requestId,executionId:execId,reason:'execution already finished'});return;}
+   if(d.choice==='continue'){this.pendingSwitch=undefined;this.lastSelection={action:'continue',at:Date.now()};this.log('execution_continue',{executionId:execId});return;}
    if(d.choice==='unresolved'){this.log('parameter_selection_unresolved',{requestId,reason:d.reason,attempt:d.attempt});return;}
-   const selected=d.selected??(d.choice==='wait'||d.choice==='stop'?{id:'wait',action:'idle' as Action,plan:{goal:'Intentional wait',preferred:'idle' as Action}}:options.find(o=>o.id===d.choice));
+   if(d.choice==='stop'){
+    if(!input.execution||!this.actionPending){this.supervisorUrgent=true;this.log('decision_discarded',{requestId,reason:'execution already finished'});return;}
+    const phase=this.world.executionProgress?.()?.phase;
+    if(input.execution.motor?.phase!==phase){this.supervisorUrgent=true;this.log('decision_discarded',{requestId,reason:'execution phase changed',requestedPhase:input.execution.motor?.phase,currentPhase:phase});return;}
+    this.pendingSwitch=undefined;this.log('execution_stop',{requestId,executionId:execId});this.actionController?.abort();this.world.stop();await this.executionTask;this.supervisorUrgent=true;return;
+   }
+   const selected=d.selected??options.find(o=>o.id===d.choice);
+   if(d.choice==='wait'||selected?.action==='idle'){this.supervisorUrgent=true;this.log('decision_discarded',{requestId,reason:'intentional idle is not a selectable action'});return;}
    if(!selected||!candidates(fresh,selected.plan).includes(selected.action)){const reason=selected?.action==='move'&&selected.plan.destination&&moveReached(fresh.position,selected.plan.destination)?'Selected destination is already within arrival radius 2; no movement would occur':'Selected arguments do not pass current physical/observation validation';this.rememberSelectionFeedback(JSON.stringify({kind:'unexecuted_selector_decision',reason,selected: selected?{action:selected.action,plan:selected.plan}:null,currentPosition:fresh.position,at:Date.now()}),reviewBasis);this.log('decision_discarded',{requestId,reason:'selected arguments no longer executable',detail:reason,selectedAction:selected?.action});this.supervisorUrgent=true;return;}
    if(this.actionPending&&this.activeAction===selected.action&&executionIdentity(this.activeAction!,this.executionPlan!)===executionIdentity(selected.action,selected.plan)){this.pendingSwitch=undefined;return;}
    // A switch based on a superseded motor phase needs a fresh model decision.
