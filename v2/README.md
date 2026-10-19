@@ -48,7 +48,7 @@ Ctrl-C로 종료합니다. 목표는 선택 사항이며 `.env` 대신 실행 �
 
 기본 `TARGET_POLICY=observed`에서는 LLM이 작업 의도를 주고 JEV가 대상을 고릅니다. `planner`는 이전 정책과의 비교용입니다. `JEV_ARGUMENT_CONTRACT`의 기본값은 `legacy`, `JEV_WITHDRAWAL_MODE`는 `direct`입니다. `direct`는 모든 액션에서 인자 선택 후 추가 승인 없이 실행을 시도하며 최신 상태 검사는 유지합니다. `coordinated`, `joint`, `separate`, `proposal` 등 비교 설정이 있으며 최신 검증 결과가 기본 설정 전체에 적용되는 것은 아닙니다. [구조](docs/ARCHITECTURE.md) · [검증 현황](docs/VALIDATION.md)
 
-`JEV_LOOK_BINDING=parallel-branches`는 `coordinated`/`direct` 설정에서 look 인자를 한 요청에 묶는 비교 옵션입니다. 모든 1도 단위 각도를 유지하며 기본값은 `sequential`입니다. 실제 서버에서 선택 지연 감소는 확인했지만, 생산적인 작업·목표 완료 개선은 확인되지 않았습니다.
+`JEV_LOOK_BINDING=parallel-branches`는 `coordinated`/`direct` 설정에서 look 인자를 한 요청에 묶는 비교 옵션입니다. 모든 1도 단위 각도를 유지하며 기본값은 `sequential`입니다. `relative-branches`는 동일한 2회 구조에서 현재 시선 대비 회전량과 절대각도 범위를 함께 제시하는 비교 옵션이며, 저장 입력의 실제 API 검증까지 완료했습니다. 실제 서버에서 선택 지연 감소는 확인했지만, 생산적인 작업·목표 완료 개선은 확인되지 않았습니다.
 
 `runs/`에는 이벤트·종료 요약과 봇별 기억이 저장됩니다. 월드를 초기화하면 기억 namespace를 분리하세요. 기억한 목표는 재접속 후 현재 관측으로 재검토합니다.
 

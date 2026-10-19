@@ -63,7 +63,7 @@ export function cameraSemantics(s:Pick<Snapshot,'vision'>){return {
  pitchDegrees:'Absolute camera elevation in degrees: -90 down, 0 horizontal, 90 up. Execution applies this pitch together with boundArguments.yawDegrees; keeping pitch horizontal does not cancel a yaw change.',
  currentCameraDegrees:s.vision?{yaw:((s.vision.yaw*180/Math.PI)%360+360)%360,pitch:s.vision.pitch*180/Math.PI}:null
 };}
-export async function parameterSupervise(s:Snapshot,input:SupervisorInput,ask:Ask,contract:'legacy'|'explicit'|'coordinated'='legacy',lookBinding:'sequential'|'parallel-branches'='sequential'):Promise<Supervision>{
+export async function parameterSupervise(s:Snapshot,input:SupervisorInput,ask:Ask,contract:'legacy'|'explicit'|'coordinated'='legacy',lookBinding:'sequential'|'parallel-branches'|'relative-branches'='sequential'):Promise<Supervision>{
  const transport=ask;
  if(contract!=='legacy')ask=async(questions,context)=>{
   if(!context.argumentName)return transport(questions,{...context,argumentContract:contract,capabilityFacts:{placeableItems:s.placeableItems??[],placementSiteCount:s.placementSites?.length??0,foodItems:s.edibleItems??[],note:'Current observation contains full targets and constraints. These facts do not recommend an action. Argument selection can explicitly withdraw to action selection.'}});
@@ -110,7 +110,7 @@ export async function parameterSupervise(s:Snapshot,input:SupervisorInput,ask:As
    case 'eat':plan.foodItem=await pick('foodItem',s.edibleItems??[]);break;
    case 'follow':plan.followPlayer=(await pick('player',s.nearbyPlayers??[])).name;break;
    case 'attack':case 'flee':plan.targetEntityId=(await pick('enemy',s.enemies??[])).id;break;
-   case 'look':{if(lookBinding==='parallel-branches'){const angles=await selectLookArguments(s,ask,lookBinding);plan.look={yaw:angles.yawDegrees*Math.PI/180,pitch:angles.pitchDegrees*Math.PI/180};}else plan.look={yaw:(await pick('yawDegrees',Array.from({length:360},(_,i)=>i)))*Math.PI/180,pitch:(await pick('pitchDegrees',Array.from({length:181},(_,i)=>i-90)))*Math.PI/180};break;}
+   case 'look':{if(lookBinding!=='sequential'){const angles=await selectLookArguments(s,ask,lookBinding);plan.look={yaw:angles.yawDegrees*Math.PI/180,pitch:angles.pitchDegrees*Math.PI/180};}else plan.look={yaw:(await pick('yawDegrees',Array.from({length:360},(_,i)=>i)))*Math.PI/180,pitch:(await pick('pitchDegrees',Array.from({length:181},(_,i)=>i-90)))*Math.PI/180};break;}
    case 'give':{const recipient=(await pick('recipient',s.nearbyPlayers??[])).name;const item=await pick('item',names);const n=inv.filter(i=>i.name===item).reduce((n,i)=>n+i.count,0);plan.transfer={recipient,item,count:await pick('count',Array.from({length:Math.min(64,n)},(_,i)=>i+1))};break;}
    case 'inspect_container':case 'deposit':case 'withdraw':{
     const c=await pick('container',(s.vision?.blocks??[]).filter(b=>['chest','furnace','blast_furnace','smoker'].includes(b.name)));plan.container=c.position;

@@ -168,3 +168,15 @@ test('ApiBrain parallel look reaches executable plan in exactly two calls with f
  const s=fixture(),d=await brain.supervise(s,input,new AbortController().signal);
  assert.equal(calls.length,2);assert.equal(calls[1].length,10);assert.equal(d.selected?.action,'look');assert.equal(d.selected?.plan.look?.yaw,359*Math.PI/180);assert.equal(d.selected?.plan.look?.pitch,-37*Math.PI/180);assert.ok(candidates(s,d.selected!.plan).includes('look'));
 });
+
+test('ApiBrain relative look executes the model-selected absolute target in two calls',async()=>{
+ let count=0;const brain=new ApiBrain({...config(),mode:'jev',targetPolicy:'observed',argumentContract:'coordinated',withdrawalMode:'direct',lookBinding:'relative-branches',jevKey:'test'},new Budget(5,1),(async(_url:any,init:any)=>{
+  const p=JSON.parse(init.body),q=decodeReferenceRequest(p.state,p.questions).questions;count++;
+  // Heading rounds to 95: yaw359 is turn-96, in sector1, offset39.
+  const answers=Object.fromEntries(Object.entries(q).map(([k,v]:[string,any])=>[k,{type:'choice',confidence:0,choice:k==='action'?'look':k==='review'?'none':k==='turnSector'?'value_1':k==='pitchDegrees'?'value_53':k==='exactTurn1'?'value_39':Object.keys(v.criteria)[0]}]));
+  return Response.json({answers,usage:{input_tokens:1,output_tokens:0}});
+ })as typeof fetch);
+ const s=fixture();s.vision={...s.vision!,yaw:94.95*Math.PI/180,pitch:0};
+ const d=await brain.supervise(s,input,new AbortController().signal);
+ assert.equal(count,2);assert.equal(d.selected?.action,'look');assert.equal(d.selected?.plan.look?.yaw,359*Math.PI/180);assert.equal(d.selected?.plan.look?.pitch,-37*Math.PI/180);
+});

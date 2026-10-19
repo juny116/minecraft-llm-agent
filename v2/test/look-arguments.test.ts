@@ -23,3 +23,22 @@ test('conditional parallel proposals cover every exact yaw and use only model-se
   assert.equal(calls,1);assert.deepEqual(result,{yawDegrees:yaw,pitchDegrees:90});
  }
 });
+
+test('relative camera preserves all absolute headings at fractional and wrapping origins',async()=>{
+ for(const heading of [0,94.95,359.95])for(let yaw=0;yaw<360;yaw++){
+  const s=new MockWorld().snapshot();s.vision={yaw:heading*Math.PI/180,pitch:0,blocks:[]};let calls=0;
+  const result=await selectLookArguments(s,async(q)=>{calls++;
+   const values=Object.entries(q).filter(([k])=>k.startsWith('exactTurn')).flatMap(([,v])=>Object.values(v.criteria).map(x=>Number(String(x).match(/absolute yaw (\d+)deg/)![1])));
+   assert.equal(new Set(values).size,360);assert.deepEqual([...values].sort((a,b)=>a-b),Array.from({length:360},(_,i)=>i));
+   const turn=((yaw-Math.round(heading)+540)%360)-180,sector=Math.floor((turn+180)/45),offset=(turn+180)%45;
+   return Object.fromEntries(Object.entries(q).map(([k,v])=>[k,{type:'choice',confidence:0,choice:k==='turnSector'?'value_'+sector:k==='pitchDegrees'?'value_'+(yaw%181):k==='exactTurn'+sector?'value_'+offset:Object.keys(v.criteria)[0]}]));
+  },'relative-branches');
+  assert.equal(calls,1);assert.deepEqual(result,{yawDegrees:yaw,pitchDegrees:yaw%181-90});
+ }
+});
+test('relative binding rejects missing camera and malformed choices without a fallback',async()=>{
+ const s=new MockWorld().snapshot();s.vision=undefined;
+ await assert.rejects(selectLookArguments(s,async()=>{throw Error('must not call');},'relative-branches'),/requires observed camera/);
+ s.vision={yaw:0,pitch:0,blocks:[]};
+ await assert.rejects(selectLookArguments(s,async()=>({turnSector:{type:'choice',choice:'value_8',confidence:1}}),'relative-branches'),/Invalid relative/);
+});

@@ -16,12 +16,12 @@ export function config() {
   const withdrawalMode=process.env.JEV_WITHDRAWAL_MODE??'direct';
   if(!['direct','joint','separate','proposal'].includes(withdrawalMode))throw Error('Invalid JEV_WITHDRAWAL_MODE');
   const lookBinding=process.env.JEV_LOOK_BINDING??'sequential';
-  if(!['sequential','parallel-branches'].includes(lookBinding))throw Error('Invalid JEV_LOOK_BINDING');
-  if(lookBinding==='parallel-branches'&&(withdrawalMode!=='direct'||argumentContract!=='coordinated'))throw Error('Parallel look binding requires coordinated/direct selection');
+  if(!['sequential','parallel-branches','relative-branches'].includes(lookBinding))throw Error('Invalid JEV_LOOK_BINDING');
+  if(lookBinding!=='sequential'&&(withdrawalMode!=='direct'||argumentContract!=='coordinated'))throw Error('Parallel look binding requires coordinated/direct selection');
   const auth = process.env.MC_AUTH ?? 'offline';
   if (!['offline', 'microsoft'].includes(auth)) throw new Error('Invalid MC_AUTH');
   return {
-    lookBinding:lookBinding as 'sequential'|'parallel-branches',
+    lookBinding:lookBinding as 'sequential'|'parallel-branches'|'relative-branches',
     withdrawalMode:withdrawalMode as 'direct'|'joint'|'separate'|'proposal',
     argumentContract:argumentContract as 'legacy'|'explicit'|'coordinated',
     names, mode: mode as 'jev' | 'llm' | 'rules',

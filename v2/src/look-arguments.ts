@@ -1,8 +1,9 @@
 import {selectValue,cameraSemantics,type Ask,type Question} from './parameter-supervisor.js';
 import type {Snapshot} from './types.js';
-export type LookBinding='sequential'|'batched'|'parallel-branches';
+export type LookBinding='sequential'|'batched'|'parallel-branches'|'relative-branches';
 // Experimental binding only. Runtime defaults are unchanged.
 export async function selectLookArguments(s:Snapshot,ask:Ask,mode:LookBinding){
+ if(mode==='relative-branches')return selectRelativeLook(s,ask);
  const context={selectedAction:'look',boundArguments:{} as Record<string,unknown>,argumentContract:'coordinated',argumentSemantics:cameraSemantics(s)};
  if(mode==='sequential'){
   const yawDegrees=await selectValue('yawDegrees',Array.from({length:360},(_,i)=>i),ask,context);
@@ -26,4 +27,25 @@ export async function selectLookArguments(s:Snapshot,ask:Ask,mode:LookBinding){
  const sector=value('yawSector');
  if(mode==='parallel-branches'){for(let i=0;i<8;i++)value('yawInSector'+i);return {yawDegrees:value('yawInSector'+sector),pitchDegrees:value('pitchDegrees')-90};}
  return {yawDegrees:45*sector+value('yawOffset'),pitchDegrees:value('pitchDegrees')-90};
+}
+
+// Same 360 integer absolute headings, expressed as turns around the current heading.
+// Rounding selects a coordinate origin only; it never selects a motor target.
+async function selectRelativeLook(s:Snapshot,ask:Ask){
+ const semantics=cameraSemantics(s),camera=semantics.currentCameraDegrees;
+ if(!camera)throw Error('Relative look requires observed camera orientation');
+ const from=camera.yaw,base=Math.round(from)%360;
+ const q:Record<string,Question>={
+  turnSector:{type:'choice',instructions:'Choose a camera turn range for the observation needed by the current task. Turns can face unseen directions. Each conditional exactTurn answer is used only if you choose its range. All integer absolute headings remain available.',criteria:{}},
+  pitchDegrees:{type:'choice',instructions:'Choose absolute pitch for the same intended observation, -90 down, 0 horizontal, 90 up.',criteria:Object.fromEntries(Array.from({length:181},(_,i)=>['value_'+i,'absolute pitch '+(i-90)+'deg']))}
+ };
+ for(let k=0;k<8;k++){
+  const lo=-180+45*k,hi=lo+44,first=(base+lo+360)%360,last=(base+hi+360)%360;
+  q.turnSector.criteria['value_'+k]=`Turn ${lo}..${hi}deg from rounded current yaw ${base}deg; positive is left, negative right. Absolute yaw ${first}..${last}deg${first>last?' wrapping through 359 to 0':''}. ${lo<=0&&hi>=0?'Includes keeping the same heading.':''}`;
+  q['exactTurn'+k]={type:'choice',instructions:'Conditional on this turn range being selected, choose the exact turn for the SAME task. Other ranges are ignored; no turn is preferred.',criteria:Object.fromEntries(Array.from({length:45},(_,i)=>{const turn=lo+i,yaw=(base+turn+360)%360;return ['value_'+i,`turn ${turn}deg; absolute yaw ${yaw}deg; actual delta ${((yaw-from+540)%360)-180}deg`];}))};
+ }
+ const out=await ask(q,{selectedAction:'look',argumentName:'cameraAngles',boundArguments:{},argumentContract:'coordinated',argumentSemantics:{...semantics,meaning:'Yaw uses rounded current heading as a lattice origin only; actual motor target is the stated integer absolute yaw. No targets are filtered.'},bindingContract:'conditional relative-turn proposals; apply only the model-selected branch and pitch'});
+ const value=(name:string)=>{const a=out?.[name];if(a?.type!=='choice'||!Object.hasOwn(q[name].criteria,a.choice)||!Number.isFinite(a.confidence)||a.confidence<0||a.confidence>1)throw Error('Invalid relative camera answer');return Number(a.choice.slice(6));};
+ const sector=value('turnSector');for(let k=0;k<8;k++)value('exactTurn'+k);
+ return {yawDegrees:(base-180+45*sector+value('exactTurn'+sector)+360)%360,pitchDegrees:value('pitchDegrees')-90};
 }

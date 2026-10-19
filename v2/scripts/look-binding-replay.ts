@@ -39,7 +39,7 @@ const ledger=new FunctionalLedger('runs/look-binding-cost-ledger.json',140,.5,5)
 const save=()=>writeFileSync(dir+'/rows.json',JSON.stringify(rows),{mode:0o600});
 writeFileSync(dir+'/samples.json',JSON.stringify(samples),{mode:0o600});
 try{
- const comparison:LookBinding=process.argv.includes('--parallel-branches')?'parallel-branches':'batched';
+ const comparison:LookBinding=process.argv.includes('--relative-branches')?'relative-branches':process.argv.includes('--parallel-branches')?'parallel-branches':'batched';
  for(let repeat=0;repeat<2;repeat++)for(let sample=0;sample<samples.length;sample++)for(const mode of ((sample+repeat)%2?[comparison,'sequential']:['sequential',comparison]) as LookBinding[]){
   const f=samples[sample],context=structuredClone(f.context),calls:any[]=[],start=Date.now(),cost=ledger.budget.usd;
   const transport:Ask=async(questions,selection)=>{
