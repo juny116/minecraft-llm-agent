@@ -42,3 +42,14 @@ test('complete guidebook is visible without raw evidence, matching scope is left
  const s=fixture();s.memoryGuidance=Array.from({length:12},(_,i)=>({id:'g'+i,status:'active',version:1,updatedAt:1,model:'fake',text:'Conditional advice',uncertainty:'Tentative',scope:{action:'eat',food:[0,2],health:[0,20],species:[],equipment:[]},support:['raw-episode'],counterexamples:[]})) as any;
  const c=selectorContext(s,input,{});assert.equal(c.guidance.length,12);assert.ok(!JSON.stringify(c.guidance).includes('raw-episode'));assert.equal(c.guidance[0].scope.food![1],2);
 });
+
+test('repeated evidence is losslessly shared without turning question schemas into references',()=>{
+ const blocks=Array.from({length:100},(_,i)=>({name:'stone',position:{x:-500+i%10,y:80,z:-400+Math.floor(i/10)},lastSeen:1700000000000}));
+ const receipt={reason:'failed bounded route',blocks,detail:'Observed geometry, not proof of permanent obstruction. '.repeat(5)};
+ const question={type:'choice',instructions:'Choose a value',criteria:{yes:'yes',no:'no'}};
+ const context={first:receipt,second:structuredClone(receipt),third:structuredClone(receipt)};
+ const q={a:question,b:structuredClone(question)},packed=referenceRequest(context,q);
+ assert.equal(packed.questions.a.type,'choice');assert.equal(packed.questions.b.type,'choice');assert.equal(typeof packed.questions.a.instructions,'string');
+ const restored=decodeReferenceRequest(packed.state,packed.questions);assert.deepEqual(restored.context,context);assert.deepEqual(restored.questions,q);
+ assert.ok(JSON.stringify(packed).length<JSON.stringify({context,q}).length*.6);
+});

@@ -1,9 +1,14 @@
+import {spatialContext} from './spatial-context.js';
 import type {Snapshot} from './types.js';
 import type {SupervisorInput} from './supervision.js';
 import {guidebookView} from './experience-memory.js';
 
 // Observation is current; old ordinary terrain belongs to the motor's local map.
 export function currentModelState(s:Snapshot):Snapshot {
+ if(s.perception){
+  const spatial=s.spatial??spatialContext(s),near=new Set(spatial.near.rows.map(r=>[r[0]+spatial.near.origin.x,r[1]+spatial.near.origin.y,r[2]+spatial.near.origin.z].join(',')));
+  return {...s,spatial,places:[],observedDestinationKeys:undefined,navigationTargets:[],vision:s.vision?{...s.vision,blocks:[]}:undefined,placeEvidence:s.placeEvidence?.filter(e=>near.has(`${e.position.x},${e.position.y},${e.position.z}`)||s.importantPlaces?.some(p=>p.position.x===e.position.x&&p.position.y===e.position.y&&p.position.z===e.position.z))};
+ }
  const visible=new Set((s.vision?.blocks??[]).map(b=>`${b.position.x},${b.position.y},${b.position.z}`));
  return {...s,places:[],observedDestinationKeys:undefined,navigationTargets:(s.navigationTargets??[]).filter(p=>visible.has(`${p.x},${p.y},${p.z}`))};
 }

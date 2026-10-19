@@ -98,3 +98,11 @@ test('reflection reserves its actual larger output ceiling and identifies trunca
  const input={revision:0,through:0,episodes:[],guides:[],feedback:'Invalid guideline uncertainty: max 300 characters'};
  assert.deepEqual(await brain.reflect(input,new AbortController().signal),[]);truncate=true;await assert.rejects(brain.reflect(input,new AbortController().signal),/truncated/);assert.equal(budget.reservedUsd,0);
 });
+
+
+test('long goal review receives bounded panorama terrain, including historical status',async()=>{
+ const state=new MockWorld().snapshot();state.perception={mode:'panorama',range:48};state.position={x:0,y:64,z:0};state.vision={yaw:0,pitch:0,blocks:[{name:'stone',position:{x:3,y:64,z:0},lastSeen:10}]};state.places=[{name:'crafting_table',position:{x:6,y:64,z:0},lastSeen:5}];
+ const transport=(async(_url:any,init:any)=>{const body=JSON.parse(init.body),input=JSON.parse(body.messages[1].content);assert.equal(input.state.perception.mode,'panorama');assert.ok(input.state.spatial.near.names.includes('crafting_table'));assert.equal(input.state.vision.blocks.length,0);return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[],activeGoalId:null})}}],usage:{prompt_tokens:10,completion_tokens:10}});}) as typeof fetch;
+ const context:any={longTermGoal:null,mediumTerm:{summary:'',steps:[],activeStep:0},replanReasons:[],recentActions:[],olderSummary:{count:0,byAction:{},inventoryNet:{},healthNet:0},failureStreak:0};
+ await new ApiBrain(c(),new Budget(2,1),transport).reviewGoals(state,context,signal());
+});

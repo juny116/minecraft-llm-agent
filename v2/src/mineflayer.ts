@@ -18,7 +18,7 @@ import {randomUUID} from 'node:crypto';
 import {IncomingDamage} from './incoming-damage.js';
 import {CombatEvidenceStore} from './combat-evidence.js';
 import { combat, hostileKinds, distance, type Enemy, type Encounter } from './combat.js';
-import { PlaceMemory, sampleView, summarizePlaces, viewDirection, visibleBlockFace, VISION } from './vision.js';
+import { PlaceMemory, sampleView, sampleSurroundings, summarizePlaces, viewDirection, visibleBlockFace, VISION } from './vision.js';
 import { RecipeBook } from "./recipe-book.js";
 import { protocolOverrides } from "./protocol.js";
 import mineflayer from 'mineflayer';
@@ -252,7 +252,7 @@ export class MineflayerWorld implements World {
   // Exact ray to a known target supplements the sparse observation grid; it never discovers hidden targets.
   private miningFace(block:NonNullable<ReturnType<mineflayer.Bot['blockAt']>>){
     const entity=this.bot.entity,eye=entity.position.offset(0,(entity as typeof entity & {eyeHeight?:number}).eyeHeight??1.62,0);
-    const point=visibleBlockFace(eye,this.bot.entity.yaw,this.bot.entity.pitch,block.position,(d,length)=>(this.bot.world.raycast(eye,eye.scaled(0).offset(d.x,d.y,d.z),length) as any)?.position??null);
+    const point=visibleBlockFace(eye,this.bot.entity.yaw,this.bot.entity.pitch,block.position,(d,length)=>(this.bot.world.raycast(eye,eye.scaled(0).offset(d.x,d.y,d.z),length) as any)?.position??null,true);
     if(!point)return;
     const delta=eye.scaled(0).offset(point.x-eye.x,point.y-eye.y,point.z-eye.z),length=delta.norm();
     const hit=this.bot.world.raycast(eye,delta.scaled(1/length),length+.01) as any;
@@ -265,7 +265,7 @@ export class MineflayerWorld implements World {
     return !!visibleBlockFace(eye,this.bot.entity.yaw,this.bot.entity.pitch,block.position,(d,length)=>{
       const hit=this.bot.world.raycast(eye,eye.scaled(0).offset(d.x,d.y,d.z),length) as unknown as {position:import('./vision.js').Position}|null;
       return hit?.position??null;
-    });
+    },true);
   }
   private placementSupport(expected?:import('./vision.js').Position){
     this.observe();
@@ -373,14 +373,16 @@ export class MineflayerWorld implements World {
   private observe(force = false) {
     if (!this.ready || !this.bot.entity) return;
     const dimension = String(this.bot.game.dimension);
-    if (dimension !== this.observationDimension) { this.saveSpatial(true);this.memory.clear();this.knownCacheAt=-1;this.knownCache=[];this.navigationHints=[];this.navigationHintsAt=0; this.containers=this.spatial?.get(dimension).containers??[]; this.observationDimension = dimension; }
+    if (dimension !== this.observationDimension) { this.saveSpatial(true);this.memory.clear();this.knownCacheAt=-1;this.knownCache=[];this.navigationHints=[];this.navigationHintsAt=0; this.containers=this.spatial?.get(dimension,this.bot.entity.position).containers??[]; this.observationDimension = dimension; }
     if (!force && Date.now()-this.observedAt<500) return;
     this.observedAt=Date.now();
     const e=this.bot.entity, eye=e.position.offset(0, (e as typeof e & {eyeHeight?:number}).eyeHeight ?? 1.62, 0);
-    this.visible=sampleView(e.yaw,e.pitch,d => {
-      const hit=this.bot.world.raycast(eye,eye.scaled(0).offset(d.x,d.y,d.z),VISION.range) as unknown as {name:string;position:typeof eye} | null;
+    const cast=(d:import('./vision.js').Position) => {
+      const hit=this.bot.world.raycast(eye,eye.scaled(0).offset(d.x,d.y,d.z),48) as unknown as {name:string;position:typeof eye} | null;
       return hit ? {name:hit.name,position:hit.position} : null;
-    },this.observedAt);
+    };
+    const observed=[...sampleSurroundings(cast,this.observedAt),...sampleView(e.yaw,e.pitch,cast,this.observedAt)];
+    this.visible=[...new Map(observed.map(b=>[`${b.position.x},${b.position.y},${b.position.z}`,b])).values()];
     this.memory.observe(this.visible);
     this.containers=this.containers.filter(c=>!this.visible.some(b=>samePosition(b.position,c.position)&&!['chest','furnace','blast_furnace','smoker'].includes(b.name)));
     this.saveSpatial();
@@ -388,7 +390,7 @@ export class MineflayerWorld implements World {
   private saveSpatial(force=false){if(!this.spatial||!this.observationDimension)return;this.spatial.update(this.observationDimension,this.memory.snapshot(),this.containers);this.spatial.flush(force);}
   private knownCacheAt=-1;private knownCacheDimension='';private knownCache:import('./vision.js').SeenBlock[]=[];
   private knownPlaces(){
-    if(!this.knownCache||this.knownCacheAt!==this.observedAt||this.knownCacheDimension!==this.observationDimension){const m=new PlaceMemory();m.observe(this.spatial?.get(this.observationDimension).places??[]);m.observe(this.memory.snapshot());this.knownCache=m.snapshot();this.knownCacheAt=this.observedAt;this.knownCacheDimension=this.observationDimension;}
+    if(!this.knownCache||this.knownCacheAt!==this.observedAt||this.knownCacheDimension!==this.observationDimension){const m=new PlaceMemory();m.observe(this.spatial?.get(this.observationDimension,this.bot.entity?.position).places??[]);m.observe(this.memory.snapshot());this.knownCache=m.snapshot();this.knownCacheAt=this.observedAt;this.knownCacheDimension=this.observationDimension;}
     return structuredClone(this.knownCache);
   }
   private visibleBlock(matches: (name: string, position: import('./vision.js').Position) => boolean) {
@@ -401,9 +403,9 @@ export class MineflayerWorld implements World {
   private entityVisible(entity: mineflayer.Bot['entity']) {
     const eye=this.bot.entity.position.offset(0,1.62,0), target=entity.position.offset(0,entity.height/2,0);
     const offset=target.minus(eye), distance=offset.norm();
-    if(!distance || distance>VISION.range)return false;
+    if(!distance || distance>48)return false;
     const d=offset.scaled(1/distance), f=viewDirection(this.bot.entity.yaw,this.bot.entity.pitch);
-    if(d.x*f.x+d.y*f.y+d.z*f.z<Math.cos(Math.PI/6))return false;
+    // Automatic surrounding sensing still requires an unobstructed ray.
     return !this.bot.world.raycast(eye,d,Math.max(0,distance-.1));
   }
   private async navigate(goal: InstanceType<typeof goals.GoalNear>,signal?:AbortSignal) {
@@ -524,7 +526,7 @@ export class MineflayerWorld implements World {
       return item && this.bot.recipesFor(item.id,null,1,table).length>0;
     }))] : [];
     const knownPlaces=this.knownPlaces();
-    const snapshot:Snapshot={ importantPlaces:this.importantPlaces?.snapshot()??[],placementSites:this.ready?this.observedPlacementSites():[],edibleItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>this.bot.registry.foodsByName[i.name]).map(i=>i.name))]:[],observedDestinationKeys:knownPlaces.map(b=>[b.position.x,b.position.y,b.position.z].join(',')),navigationTargets:this.navigationTargets(),visibleItems:this.ready?this.visibleItems():[],placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
+    const snapshot:Snapshot={ perception:{mode:'panorama',range:48},importantPlaces:this.importantPlaces?.snapshot()??[],placementSites:this.ready?this.observedPlacementSites():[],edibleItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>this.bot.registry.foodsByName[i.name]).map(i=>i.name))]:[],observedDestinationKeys:knownPlaces.map(b=>[b.position.x,b.position.y,b.position.z].join(',')),navigationTargets:this.navigationTargets(),visibleItems:this.ready?this.visibleItems():[],placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
       vision: {yaw:this.bot.entity?.yaw ?? 0,pitch:this.bot.entity?.pitch ?? 0,blocks:structuredClone(this.visible)}, places:structuredClone(knownPlaces),craftable,
       dimension:String(this.bot.game?.dimension??'unknown'),environment:{inWater:!!(this.bot.entity as any)?.isInWater,inLava:!!(this.bot.entity as any)?.isInLava,onGround:!!this.bot.entity?.onGround,oxygen:(this.bot as any).oxygenLevel},lifecycle:{generation:this.generation,deathCount:this.deathCount,phase:this.dead?'dead':this.ready?'alive':'connecting',lastDeath:this.recovery.context().deaths.at(-1)},recovery:this.recovery.context(),
       ready: this.ready, health: this.bot.health ?? 0, food: this.bot.food ?? 0, logs,

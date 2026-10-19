@@ -4,11 +4,11 @@ export const VISION = { range: 16, horizontalDegrees: 90, verticalDegrees: 60, c
 export function viewDirection(yaw: number, pitch: number): Position {
   return { x: -Math.sin(yaw) * Math.cos(pitch), y: Math.sin(pitch), z: -Math.cos(yaw) * Math.cos(pitch) };
 }
-export function sampleView(yaw: number, pitch: number, cast: (direction: Position) => {name: string; position: Position} | null, now: number): SeenBlock[] {
+export function sampleView(yaw: number, pitch: number, cast: (direction: Position) => {name: string; position: Position} | null, now: number, wide=false): SeenBlock[] {
   const seen = new Map<string, SeenBlock>();
   for (let y = 0; y < VISION.rows; y++) for (let x = 0; x < VISION.columns; x++) {
     const h = Math.tan(VISION.horizontalDegrees * Math.PI / 360) * (2*x/(VISION.columns-1)-1);
-    const v = Math.tan(VISION.verticalDegrees * Math.PI / 360) * (1-2*y/(VISION.rows-1));
+    const v = Math.tan((wide?90:VISION.verticalDegrees) * Math.PI / 360) * (1-2*y/(VISION.rows-1));
     const forward = viewDirection(yaw, pitch), right = {x: Math.cos(yaw), y: 0, z: -Math.sin(yaw)};
     const up = {x: Math.sin(yaw)*Math.sin(pitch), y: Math.cos(pitch), z: Math.cos(yaw)*Math.sin(pitch)};
     const d = {x: forward.x+h*right.x+v*up.x, y: forward.y+v*up.y, z: forward.z+h*right.z+v*up.z};
@@ -23,7 +23,7 @@ export class PlaceMemory {
   private blocks = new Map<string, SeenBlock>();
   observe(blocks: SeenBlock[]) {
     for (const b of blocks) { this.blocks.delete(key(b.position)); this.blocks.set(key(b.position), structuredClone(b)); }
-    while(this.blocks.size>1024) this.blocks.delete(this.blocks.keys().next().value!);
+    while(this.blocks.size>8192) this.blocks.delete(this.blocks.keys().next().value!);
   }
   snapshot() { return structuredClone([...this.blocks.values()]); }
   hasSupport(p: Position) { const b=this.blocks.get(key({x:p.x,y:p.y-1,z:p.z}));return !!b&&!['air','cave_air','void_air','water','lava'].includes(b.name); }
@@ -37,14 +37,21 @@ export function summarizePlaces(blocks: SeenBlock[], limit = 128): SeenBlock[] {
 
 // A visible top/side face remains interactable even when the center ray enters
 // an adjacent solid block first. Each candidate still needs FOV and first-hit proof.
-export function visibleBlockFace(eye:Position,yaw:number,pitch:number,p:Position,cast:(direction:Position,length:number)=>Position|null){
+export function visibleBlockFace(eye:Position,yaw:number,pitch:number,p:Position,cast:(direction:Position,length:number)=>Position|null,omnidirectional=false){
  const forward=viewDirection(yaw,pitch);
  for(const [x,y,z] of [[.5,.5,.5],[.5,.999,.5],[.5,.001,.5],[.001,.5,.5],[.999,.5,.5],[.5,.5,.001],[.5,.5,.999]]){
   const point={x:p.x+x,y:p.y+y,z:p.z+z},dx=point.x-eye.x,dy=point.y-eye.y,dz=point.z-eye.z,length=Math.hypot(dx,dy,dz);
-  if(!length||length>VISION.range)continue;
+  if(!length||length>(omnidirectional?48:VISION.range))continue;
   const d={x:dx/length,y:dy/length,z:dz/length};
-  if(d.x*forward.x+d.y*forward.y+d.z*forward.z<Math.cos(Math.PI/6))continue;
+  if(!omnidirectional&&d.x*forward.x+d.y*forward.y+d.z*forward.z<Math.cos(Math.PI/6))continue;
   const hit=cast(d,length+.01);if(hit&&key(hit)===key(p))return point;
  }
  return null;
+}
+
+// Automatic local sensing abstracts head turns, never body movement or x-ray.
+export function sampleSurroundings(cast:(direction:Position)=>{name:string;position:Position}|null,now:number):SeenBlock[]{
+ const blocks=new Map<string,SeenBlock>();
+ for(const [yaw,pitch]of [[0,0],[Math.PI/2,0],[Math.PI,0],[3*Math.PI/2,0],[0,Math.PI/2],[0,-Math.PI/2]])for(const b of sampleView(yaw,pitch,cast,now,true))blocks.set(key(b.position),b);
+ return [...blocks.values()];
 }

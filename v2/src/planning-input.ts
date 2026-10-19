@@ -10,7 +10,7 @@ export function planningInput(context?:PlanningContext){
   if(e.kind==='observation'&&d){
    const {vision,chatEvents,nearbyPlayers,...facts}=d;
    const counts:Record<string,number>={};for(const b of vision?.blocks??[])counts[b.name]=(counts[b.name]??0)+1;
-   return {...e,data:{...facts,...(e.id===out.goalReview!.observationId?{viewReference:'Current state.vision and state.nearbyPlayers'}:{historicalVisibleBlockCounts:counts,historicalViewIsNotCurrent:true})}};
+   return {...e,data:{...facts,...(e.id===out.goalReview!.observationId?{viewReference:'Current state.spatial (panorama) or state.vision, and state.nearbyPlayers'}:{historicalVisibleBlockCounts:counts,historicalViewIsNotCurrent:true})}};
   }
   if(e.kind==='action'&&d){const {before,after,...facts}=d;return {...e,data:facts};}
   return e;

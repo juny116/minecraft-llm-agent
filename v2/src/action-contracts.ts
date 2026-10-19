@@ -1,3 +1,4 @@
+import {localTerrain} from './spatial-context.js';
 import type {Snapshot} from './types.js';
 import {reachedCell} from './reach.js';
 export const MOVE_RADIUS=2;
@@ -12,5 +13,5 @@ export function partitionMoveDestinations(position:Snapshot['position'],points:S
  const observed=[...new Map(points.map(p=>[`${p.x},${p.y},${p.z}`,p])).values()];
  return {observed,eligible:observed.filter(p=>!moveReached(position,p)),alreadyReached:observed.filter(p=>moveReached(position,p))};
 }
-export function moveDomain(s:Snapshot){return partitionMoveDestinations(s.position,[...(s.navigationTargets??[]).filter(p=>(s.vision?.blocks??[]).some(b=>b.position.x===p.x&&b.position.y===p.y&&b.position.z===p.z)),...(s.vision?.blocks??[]).map(b=>b.position),...(s.importantPlaces??[]).filter(p=>p.dimension===s.dimension).map(p=>p.position),...(s.recovery?.deaths??[]).filter(d=>d.dimension===s.dimension).map(d=>({x:Math.floor(d.position.x),y:Math.floor(d.position.y),z:Math.floor(d.position.z)}))]);}
+export function moveDomain(s:Snapshot){return partitionMoveDestinations(s.position,[...(s.perception?localTerrain(s).filter(b=>!['air','cave_air','void_air'].includes(b.name)).map(b=>b.position):[]),...(s.navigationTargets??[]).filter(p=>(s.vision?.blocks??[]).some(b=>b.position.x===p.x&&b.position.y===p.y&&b.position.z===p.z)),...(s.vision?.blocks??[]).map(b=>b.position),...(s.importantPlaces??[]).filter(p=>p.dimension===s.dimension).map(p=>p.position),...(s.recovery?.deaths??[]).filter(d=>d.dimension===s.dimension).map(d=>({x:Math.floor(d.position.x),y:Math.floor(d.position.y),z:Math.floor(d.position.z)}))]);}
 export function moveArgumentSemantics(position:Snapshot['position'],domain:ReturnType<typeof partitionMoveDestinations>){return {arrivalRadiusBlocks:MOVE_RADIUS,currentPosition:position,distanceRule:'Euclidean distance between floored current and target block cells; not a route guarantee.',eligibleDestinationCount:domain.eligible.length,alreadyWithinArrivalRadius:{meaning:'These coordinates already satisfy completion: no move starts for them. They remain known but are not new move arguments.',coordinates:domain.alreadyReached}};}

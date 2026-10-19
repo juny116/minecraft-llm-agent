@@ -1,3 +1,4 @@
+import {terrainRegions} from './spatial-context.js';
 import {selectLookArguments} from './look-arguments.js';
 import {MOVE_RADIUS,MOVE_DESCRIPTION,MINE_DESCRIPTION,moveDomain,moveArgumentSemantics} from './action-contracts.js';
 import {actions,type Action,type Plan,type Snapshot} from './types.js';
@@ -101,8 +102,17 @@ export async function parameterSupervise(s:Snapshot,input:SupervisorInput,ask:As
  const inv=(s.inventory??[]).filter(i=>i.slot>=9&&i.slot<=44),names=unique(inv.map(i=>i.name),x=>x);
  try{
   switch(action){
-   case 'mine':{const b=await pick('block',unique((s.vision?.blocks??[]).filter(b=>validCell(b.position)&&!['air','cave_air','void_air','water','lava','bedrock'].includes(b.name)),b=>key(b.position)));const tool=await pick('tool',[{slot:-1,name:'keep_current_hand'},...inv.map(i=>({slot:i.slot,name:i.name}))]);plan.mine={position:b.position,expected:b.name,...(tool.slot<0?{keepTool:true}:{toolSlot:tool.slot,tool:tool.name})};break;}
-   case 'move':{plan.destination=await pick('destination',moveTargets.eligible);break;}
+   case 'mine':{let observed=s.vision?.blocks??[];if(s.perception&&observed.length){const regions=terrainRegions({...s,places:[]});const group=await pick('blockRegion',regions.map(g=>({id:g.id,direction:g.direction,distanceBand:g.band,materials:[...new Set(g.points.map(b=>b.name))],observedCells:g.points.length})));observed=regions.find(g=>g.id===group.id)!.points;}const b=await pick('block',unique(observed.filter(b=>validCell(b.position)&&!['air','cave_air','void_air','water','lava','bedrock'].includes(b.name)),b=>key(b.position)));const tool=await pick('tool',[{slot:-1,name:'keep_current_hand'},...inv.map(i=>({slot:i.slot,name:i.name}))]);plan.mine={position:b.position,expected:b.name,...(tool.slot<0?{keepTool:true}:{toolSlot:tool.slot,tool:tool.name})};break;}
+   case 'move':{
+    let points=moveTargets.eligible;
+    if(s.perception&&points.length){
+     const eligible=new Set(points.map(key)),regions=terrainRegions(s).map(g=>({id:g.id,direction:g.direction,distanceBand:g.band,points:g.points.filter(b=>eligible.has(key(b.position))).map(b=>b.position)})).filter(g=>g.points.length);
+     const covered=new Set(regions.flatMap(g=>g.points.map(key))),other=points.filter(p=>!covered.has(key(p)));if(other.length)regions.push({id:'landmarks',direction:'remembered landmarks',distanceBand:'outside local map',points:other});
+     const group=await pick('destinationRegion',regions.map(g=>({id:g.id,direction:g.direction,distanceBand:g.distanceBand,observedCoordinates:g.points.length,meaning:'Unranked spatial group; choose exact coordinate next. No route is guaranteed.'})));
+     points=regions.find(g=>g.id===group.id)!.points;
+    }
+    plan.destination=await pick('destination',points);break;}
+
    case 'craft':plan.craft={item:await pick('recipeOutput',unique(s.craftable??[],x=>x)),count:await pick('recipeExecutions',Array.from({length:16},(_,i)=>i+1))};break;
    case 'place_block':case 'place_table':{const item=action==='place_table'?'crafting_table':await pick('blockItem',s.placeableItems??[]);const site=await pick('placementSite',s.placementSites??[]);plan.build={item,...site};break;}
    case 'pickup':{const item=await pick('drop',s.visibleItems??[]);plan.pickup={entityId:item.id,expected:item.name};break;}

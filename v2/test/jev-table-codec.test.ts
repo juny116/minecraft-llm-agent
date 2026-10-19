@@ -9,7 +9,7 @@ test('homogeneous observed blocks and nested coordinates round-trip without remo
  const encoded=encodeTables(value);
  assert.ok(JSON.stringify(encoded).length<JSON.stringify(value).length);
  assert.deepEqual(decodeTables(encoded),value);
- assert.equal(encoded.observation.vision.blocks.$jev_table.rows.length,600);
+ assert.equal(encoded.observation.vision.blocks.$jev_blocks.rows.length,600);
 });
 test('heterogeneous keys, empty objects and reserved marker objects round-trip',()=>{
  const data={varied:[{x:1},{x:1,y:2},null,{},[]],literal:{$jev_table:{columns:[['x']],rows:[[1]]}},other:{$jev_object:{a:1}},nested:[{a:{x:1},empty:{}},{empty:{},a:{x:2}}]};

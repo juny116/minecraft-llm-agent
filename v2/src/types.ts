@@ -7,6 +7,8 @@ export type WorkIntent={description:string;desiredInventory:{item:string;count:n
 export type Plan = Interaction & {modelSelected?:boolean;waitMs?:number;foodItem?:string;followPlayer?:string;targetEntityId?:number;placeUpdates?:import('./important-places.js').PlaceUpdate[];intent?:WorkIntent;proposals?:Plan[]; userRequest?:string|null; goalUpdates?:import('./goals.js').GoalDraft[]; activeGoalId?:string|null; speech?:import('./social.js').Speech; activeStepId?: string; longTermGoal?: string; goalRevisionReason?: string; steps?: import('./planning.js').Step[]; goal: string; preferred: Action; say?: string; destination?: { x: number; y: number; z: number }; craft?: { item: string; count: number }; look?: { yaw: number; pitch: number } };
 export type DecisionPlan = Omit<Plan,'preferred'> & {preferred?:Action;recentOutcome?:{action:Action;outcome:import('./planning.js').Outcome;result:string;changes:ReturnType<typeof import('./planning.js').changes>}};
 export type Snapshot = {
+  perception?:{mode:'panorama';range:number};
+  spatial?:ReturnType<typeof import('./spatial-context.js').spatialContext>;
   importantPlaces?:import('./important-places.js').ImportantPlace[];
   placeEvidence?:import('./important-places.js').PlaceEvidence[];
   // Motor validation only; never sent to model prompts.

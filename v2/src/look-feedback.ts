@@ -4,10 +4,10 @@ const semantics='look sets absolute camera orientation without moving the body, 
 // Observed outcomes only: never infer unseen terrain or prescribe the next action.
 export function lookFeedbackRequest<T extends Record<string,any>>(questions:Record<string,Question>,context:T){
  const q=structuredClone(questions);
- if(q.action?.criteria.look)q.action.criteria.look=semantics;
+ if(q.action?.criteria.look)q.action.criteria.look=context.observation?.perception?'Optional focused camera observation. Automatic surrounding sensing already updates without look. Set yaw/pitch to add denser samples in a chosen direction; a changed view or discovery is not guaranteed. No direction is required for ordinary movement.':semantics;
  const last=context.recentOutcome;
  const history=context.recentLookResults??(last?.decision?.action==='look'?[last]:[]);
  const observations=history.map((r:any)=>({id:r.id,endedAt:r.endedAt,outcome:r.outcome,requested:r.executionPlan?.look??r.requested,view:r.changes?.view??r.view}));
- const feedback={semantics,currentCamera:context.observation?.vision?{yawRadians:context.observation.vision.yaw,pitchRadians:context.observation.vision.pitch,visibleBlockCount:context.observation.vision.blocks.length}:null,recentLooks:observations,historyScope:'Up to six most recent look records in the retained twelve-action journal; not an exhaustive history. Missing view evidence is unknown, not zero change.'};
+ const feedback={semantics,currentCamera:context.observation?.vision?{yawRadians:context.observation.vision.yaw,pitchRadians:context.observation.vision.pitch,visibleBlockCount:context.observation.spatial?.regions.reduce((n:number,r:any)=>n+r.currentCells,0)??context.observation.vision.blocks.length}:null,recentLooks:observations,historyScope:'Up to six most recent look records in the retained twelve-action journal; not an exhaustive history. Missing view evidence is unknown, not zero change.'};
  return {questions:q,context:{...context,lookFeedback:feedback}};
 }

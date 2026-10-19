@@ -1,3 +1,4 @@
+import {isSeenCell} from './jev-table-codec.js';
 import {createHash} from 'node:crypto';
 import {jevLosslessRequest,decodeJevState,decodeJevQuestions} from './jev-state.js';
 const object=(v:any)=>v!==null&&typeof v==='object'&&!Array.isArray(v);
@@ -10,21 +11,27 @@ export function referenceRequest(context:Record<string,any>,questions:Record<str
   if(object(v)&&object(v.value))candidates.add(canonical(v.value));
   if(object(v)&&Array.isArray(v.values))for(const x of v.values)if(object(x))candidates.add(canonical(x));
  }
+ // Repeated execution/navigation receipts can dominate a panoramic request.
+ // Share exact repeated objects, not summaries: decoding retains every field.
+ const occurrences=new Map<string,number>();
+ const count=(v:any)=>{if(Array.isArray(v)){for(const x of v)count(x);return;}if(!object(v)&&typeof v!=='string')return;const k=canonical(v);if(k.length>=96)occurrences.set(k,(occurrences.get(k)??0)+1);if(object(v))for(const x of Object.values(v))count(x);};
+ count(context);count(questions);for(const [k,n]of occurrences)if(n>1)candidates.add(k);
  const entities:Record<string,any>={},originals=new Map<string,string>();
- const walk=(v:any,root=false):any=>{
-  if(Array.isArray(v))return v.map(x=>walk(x));
-  if(!object(v))return v;
+ const walk=(v:any,root=false,strings=true):any=>{
+  if(Array.isArray(v))return v.map(x=>walk(x,false,strings));
+  if(!object(v)&&!(strings&&typeof v==='string'&&candidates.has(canonical(v))))return v;
   const key=canonical(v);
   if(!root&&(position(v)||candidates.has(key))){
    const id='e_'+createHash('sha256').update(key).digest('hex').slice(0,16);
    if(originals.has(id)&&originals.get(id)!==key)throw Error('Reference collision');
-   if(!originals.has(id)){originals.set(id,key);entities[id]=position(v)?v:walk(v,true);}
+   if(!originals.has(id)){originals.set(id,key);entities[id]=position(v)||typeof v==='string'?v:walk(v,true,strings);}
    return {$entity:id};
   }
-  return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,walk(x)]));
+  if(isSeenCell(v))return v; // Keep cells together for exact delta/table encoding.
+  return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,walk(x,false,strings)]));
  };
- const state=walk(context),q=walk(questions);
- return jevLosslessRequest({...state,entityTable:entities,referenceContract:'Every {$entity:id} refers to the exact object in entityTable, shared by observation and question arguments. Resolve references before choosing. IDs are not rankings. Only supplied choices can be returned.'},q);
+ const state=walk(context),q=Object.fromEntries(Object.entries(questions).map(([name,question])=>[name,{...question,criteria:Object.fromEntries(Object.entries(question.criteria).map(([id,v])=>[id,walk(v,false,false)]))}]));
+ return jevLosslessRequest({...state,entityTable:entities,referenceContract:'Every {$entity:id} refers to the exact value (object or text) in entityTable, shared by observation and question arguments. Resolve references before choosing. IDs are not rankings. Only supplied choices can be returned.'},q);
 }
 export function decodeReferenceRequest(state:any,questions:any){
  const decoded=decodeJevState(state),{entityTable,referenceContract,...context}=decoded;
