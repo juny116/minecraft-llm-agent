@@ -59,3 +59,21 @@ test('runtime carries block parameters when moving to next medium step',async()=
 test('visible floor face remains placeable even when its buried center ray is occluded',async()=>{
  const f=fixture();f.w.blockInSight=()=>false;assert.match(await f.w.execute('place_block',signal(),plan),/Placed oak_planks/);
 });
+
+test('placement reports preparation phases and cleans motor after completion',async()=>{
+ const f=fixture(),phases:string[]=[];f.bot.equip=async()=>{phases.push(f.w.executionProgress().phase);};f.bot.lookAt=async()=>{phases.push(f.w.executionProgress().phase);};const place=f.bot.placeBlock;f.bot.placeBlock=async()=>{phases.push(f.w.executionProgress().phase);await place();};
+ await f.w.execute('place_block',signal(),plan);assert.ok(phases.includes('equipping'));assert.ok(phases.includes('aiming'));assert.ok(phases.includes('placing'));assert.equal(f.w.executionProgress(),undefined);assert.equal(f.w.executionReceipt().confirmed,true);
+});
+test('cancel after server application preserves confirmed physical effect without claiming control success',async()=>{
+ const f=fixture(),c=new AbortController(),place=f.bot.placeBlock;f.bot.placeBlock=async()=>{await place();c.abort();};
+ await assert.rejects(f.w.execute('place_block',c.signal,plan));const receipt=f.w.executionReceipt();assert.equal(receipt.cancelRequested,true);assert.equal(receipt.requestIssued,true);assert.equal(receipt.confirmed,true);assert.equal(receipt.itemDelta,-1);assert.equal(f.stats().placed,1);
+});
+test('cancellation before dispatch records no placement attempt and leaves target untouched',async()=>{
+ const f=fixture(),c=new AbortController();f.bot.equip=async()=>c.abort();await assert.rejects(f.w.execute('place_block',c.signal,plan));const receipt=f.w.executionReceipt();assert.equal(receipt.requestIssued,false);assert.equal(receipt.confirmed,false);assert.equal(receipt.itemDelta,0);assert.equal(f.stats().placed,0);
+});
+test('runtime forwards cancelled placement effect in action history instead of overwriting it',async()=>{
+ const {Runtime}=await import('../src/runtime.js');const world:any=new MockWorld(),events:any[]=[];
+ const r:any=new Runtime(world,{plan:async()=>plan,choose:async()=>({action:'place_block',confidence:1})},{planMs:60000,actionMs:1000,minConfidence:0},(event,data)=>{if(event==='action_record')events.push(data);});
+ world.executionReceipt=()=>({kind:'placement',confirmed:true,cancelRequested:true,blockMatched:true,itemDelta:-1});world.execute=async()=>{r.actionController.abort();throw Error('cancelled after server application');};
+ await r.run({action:'place_block',confidence:1},['place_block'],'selector',world.snapshot(),plan);const record=events[0].record;assert.equal(record.outcome,'cancelled');assert.equal(JSON.parse(record.result).confirmed,true);assert.equal(JSON.parse(record.result).executionOutcome,'cancelled');r.close();
+});

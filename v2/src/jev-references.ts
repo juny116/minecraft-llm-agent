@@ -1,5 +1,4 @@
 import {isSeenCell} from './jev-table-codec.js';
-import {createHash} from 'node:crypto';
 import {jevLosslessRequest,decodeJevState,decodeJevQuestions} from './jev-state.js';
 const object=(v:any)=>v!==null&&typeof v==='object'&&!Array.isArray(v);
 const position=(v:any)=>object(v)&&Object.keys(v).length===3&&['x','y','z'].every(k=>Number.isFinite(v[k]));
@@ -8,8 +7,8 @@ const canonical=(v:any):string=>JSON.stringify(v,(_k,x)=>object(x)?Object.fromEn
 export function referenceRequest(context:Record<string,any>,questions:Record<string,any>){
  const candidates=new Set<string>();
  for(const q of Object.values(questions))for(const v of Object.values(q.criteria??{}) as any[]){
-  if(object(v)&&object(v.value))candidates.add(canonical(v.value));
-  if(object(v)&&Array.isArray(v.values))for(const x of v.values)if(object(x))candidates.add(canonical(x));
+  if(object(v)&&object(v.value)&&!position(v.value))candidates.add(canonical(v.value));
+  if(object(v)&&Array.isArray(v.values))for(const x of v.values)if(object(x)&&!position(x))candidates.add(canonical(x));
  }
  // Repeated execution/navigation receipts can dominate a panoramic request.
  // Share exact repeated objects, not summaries: decoding retains every field.
@@ -21,10 +20,9 @@ export function referenceRequest(context:Record<string,any>,questions:Record<str
   if(Array.isArray(v))return v.map(x=>walk(x,false,strings));
   if(!object(v)&&!(strings&&typeof v==='string'&&candidates.has(canonical(v))))return v;
   const key=canonical(v);
-  if(!root&&(position(v)||candidates.has(key))){
-   const id='e_'+createHash('sha256').update(key).digest('hex').slice(0,16);
-   if(originals.has(id)&&originals.get(id)!==key)throw Error('Reference collision');
-   if(!originals.has(id)){originals.set(id,key);entities[id]=position(v)||typeof v==='string'?v:walk(v,true,strings);}
+  if(!root&&candidates.has(key)){
+   let id=originals.get(key);
+   if(id===undefined){id='e'+originals.size;originals.set(key,id);entities[id]=position(v)||typeof v==='string'?v:walk(v,true,strings);}
    return {$entity:id};
   }
   if(isSeenCell(v))return v; // Keep cells together for exact delta/table encoding.

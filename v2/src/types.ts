@@ -42,10 +42,11 @@ export type Snapshot = {
   messages: string[];
   recipeBook: { initialized: boolean; unlocked: string[] };
 };
-export type MotorProgress={phase:'approach'|'prepare'|'digging'|'collecting';phaseElapsedMs:number;estimatedDigMs?:number;estimatedRemainingMs?:number;digBudgetMs?:number;estimateCapped?:boolean;blockBroken:boolean};
+export type MotorProgress={phase:'approach'|'prepare'|'digging'|'collecting'|'equipping'|'aiming'|'placing'|'confirming';phaseElapsedMs:number;estimatedDigMs?:number;estimatedRemainingMs?:number;digBudgetMs?:number;estimateCapped?:boolean;blockBroken:boolean;placementRequestIssued?:boolean;phaseMeaning?:string};
 export interface World {
  importantPlaces?:import('./important-places.js').ImportantPlaces;
   executionProgress?():MotorProgress|undefined;
+  executionReceipt?():Record<string,unknown>|undefined;
   snapshot(): Snapshot;
   execute(action: Action, signal: AbortSignal, plan?: Plan): Promise<string>;
   stop(): void;

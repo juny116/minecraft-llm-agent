@@ -126,8 +126,10 @@ export class MineflayerWorld implements World {
     if(result.status==='finished'&&!result.inventoryGained.some(i=>i.name===result.target?.expected&&i.count>0)){result.status='failed';result.detail='No matching inventory gain observed; disappearance is not receipt';}
     return JSON.stringify(result);
   }
-  private motor?:{phase:import('./types.js').MotorProgress['phase'];at:number;estimatedDigMs?:number;digBudgetMs?:number;estimateCapped?:boolean;blockBroken:boolean};
-  executionProgress():import('./types.js').MotorProgress|undefined{return this.motor?{phase:this.motor.phase,phaseElapsedMs:Math.max(0,Date.now()-this.motor.at),estimatedDigMs:this.motor.estimatedDigMs,digBudgetMs:this.motor.digBudgetMs,estimateCapped:this.motor.estimateCapped,estimatedRemainingMs:this.motor.phase==='digging'&&this.motor.estimatedDigMs!==undefined?Math.max(0,this.motor.estimatedDigMs-(Date.now()-this.motor.at)):undefined,blockBroken:this.motor.blockBroken}:undefined;}
+  private placementReceipt?:Record<string,unknown>;
+  executionReceipt(){return this.placementReceipt?structuredClone(this.placementReceipt):undefined;}
+  private motor?:{placementRequestIssued?:boolean;phaseMeaning?:string;phase:import('./types.js').MotorProgress['phase'];at:number;estimatedDigMs?:number;digBudgetMs?:number;estimateCapped?:boolean;blockBroken:boolean};
+  executionProgress():import('./types.js').MotorProgress|undefined{return this.motor?{phase:this.motor.phase,placementRequestIssued:this.motor.placementRequestIssued,phaseMeaning:this.motor.phaseMeaning,phaseElapsedMs:Math.max(0,Date.now()-this.motor.at),estimatedDigMs:this.motor.estimatedDigMs,digBudgetMs:this.motor.digBudgetMs,estimateCapped:this.motor.estimateCapped,estimatedRemainingMs:this.motor.phase==='digging'&&this.motor.estimatedDigMs!==undefined?Math.max(0,this.motor.estimatedDigMs-(Date.now()-this.motor.at)):undefined,blockBroken:this.motor.blockBroken}:undefined;}
   private async mineBlock(signal:AbortSignal,plan?:Plan){
     const result=miningResult(plan?.mine??null),started=Date.now();this.motor={phase:'approach',at:started,blockBroken:false};
     const totals=()=>{const out:Record<string,number>={};for(const i of this.bot.inventory.items())out[i.name]=(out[i.name]??0)+i.count;return out;};
@@ -203,7 +205,11 @@ export class MineflayerWorld implements World {
 
   private async buildAction(action:'place_block',signal:AbortSignal,plan?:Plan){
     validateBuild(plan?.build!);
-    const cell=plan!.build!.reference;
+    const build=plan!.build!,cell=build.reference;
+    const initialCount=this.itemCount(build.item);let issued=false;
+    const phase=(value:import('./types.js').MotorProgress['phase'],meaning:string)=>{this.motor={phase:value,at:Date.now(),blockBroken:false,placementRequestIssued:issued,phaseMeaning:meaning};};
+    phase('approach','Approaching the selected support; no placement request issued.');
+    try{
     const observed=this.visible.find(b=>sameCell(b.position,cell));
     if(!observed)throw Error('Block target not currently observed');
     const vec=this.bot.entity.position.scaled(0).offset(cell.x,cell.y,cell.z);
@@ -211,10 +217,10 @@ export class MineflayerWorld implements World {
     if(!block||block.name!==observed.name)throw Error('Block target changed');
     const stateId=block.stateId;
     if(vec.distanceTo(this.bot.entity.position)>3)await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,3),signal);
-    signal.throwIfAborted();await this.bot.lookAt(vec.offset(.5,.5,.5),false);signal.throwIfAborted();
+    signal.throwIfAborted();phase('prepare','Orienting toward support; rotation is preparation, not placement failure.');await this.bot.lookAt(vec.offset(.5,.5,.5),false);signal.throwIfAborted();
     const fresh=()=>{const b=this.bot.blockAt(vec);if(!b||b.stateId!==stateId||vec.distanceTo(this.bot.entity.position)>4.5)throw Error('Block target changed or unreachable');return b;};
     block=fresh();
-    const build=plan!.build!,target=vec.scaled(0).offset(build.position.x,build.position.y,build.position.z),face=target.minus(vec);
+    const target=vec.scaled(0).offset(build.position.x,build.position.y,build.position.z),face=target.minus(vec);
     const free=()=>{
       if(this.bot.blockAt(target)?.name!=='air')throw Error('Block placement target occupied');
       const entities=[this.bot.entity,...Object.values(this.bot.entities)];
@@ -226,18 +232,27 @@ export class MineflayerWorld implements World {
     const original=this.bot.clickWindow;const sneaking=this.bot.getControlState('sneak');
     this.bot.clickWindow=((...args:Parameters<typeof original>)=>{signal.throwIfAborted();return original.apply(this.bot,args);}) as typeof original;
     try{
-      await this.bot.equip(item,'hand');signal.throwIfAborted();block=fresh();free();
+      phase('equipping','Equipping the selected item; no placement request issued.');await this.bot.equip(item,'hand');signal.throwIfAborted();block=fresh();free();
       const contact=vec.offset(.5+face.x*.5,.5+face.y*.5,.5+face.z*.5);
-      await this.bot.lookAt(contact,false);signal.throwIfAborted();
+      phase('aiming','Aiming at the selected face; no placement request issued.');await this.bot.lookAt(contact,false);signal.throwIfAborted();
       const eye=this.bot.entity.position.offset(0,1.62,0),delta=contact.minus(eye),length=delta.norm();
       if(length>4.5||length<.05||this.bot.world.raycast(eye,delta.scaled(1/length),length-.02))throw Error('Block placement face occluded');
       block=fresh();free();signal.throwIfAborted();this.bot.setControlState('sneak',true);
-      await this.bot.placeBlock(block,face);signal.throwIfAborted();
+      issued=true;phase('placing','Placement operation requested; server effect may occur even if cancelled.');await this.bot.placeBlock(block,face);phase('confirming','Checking block and inventory evidence; cancellation cannot undo a server placement.');signal.throwIfAborted();
       for(let i=0;i<20&&(this.bot.blockAt(target)?.name!==build.item||this.itemCount(build.item)!==before-1);i++)await delay(50,undefined,{signal});
       if(this.bot.blockAt(target)?.name!==build.item||this.itemCount(build.item)!==before-1)throw Error('Block placement not confirmed');
       this.memory.observe([{name:build.item,position:{...build.position},lastSeen:Date.now()}]);this.observe(true);
       return `Placed ${build.item} at ${target.x},${target.y},${target.z}`;
     }finally{this.bot.clickWindow=original;this.bot.setControlState('sneak',signal.aborted?false:sneaking);}
+    }finally{
+      // Observe effects of an already-issued operation, without sending another action.
+      if(issued&&signal.aborted)await delay(200);
+      const target=this.bot.entity.position.scaled(0).offset(build.position.x,build.position.y,build.position.z);
+      const matched=issued&&this.bot.blockAt(target)?.name===build.item,consumed=initialCount-this.itemCount(build.item);
+      this.placementReceipt={kind:'placement',requestIssued:issued,cancelRequested:signal.aborted,blockMatched:matched,itemDelta:consumed===0?0:-consumed,confirmed:matched&&consumed===1,position:{...build.position},item:build.item,observedAt:Date.now(),meaning:'Execution cancellation and world effect are separate. No request means no placement attempted; absent confirmation does not prove no delayed effect.'};
+      if(matched)this.memory.observe([{name:build.item,position:{...build.position},lastSeen:Date.now()}]);
+      this.motor=undefined;
+    }
   }
 
   private recentDrops=new Map<string,number>();
@@ -539,7 +554,7 @@ export class MineflayerWorld implements World {
     return snapshot;
   }
   async execute(action: Action, signal: AbortSignal, plan?: Plan) {
-    signal.throwIfAborted();
+    this.placementReceipt=undefined;signal.throwIfAborted();
     const cancel = () => this.stop(); signal.addEventListener('abort', cancel, { once: true });
     let window: Awaited<ReturnType<mineflayer.Bot['openChest']>> | undefined;
     try {
