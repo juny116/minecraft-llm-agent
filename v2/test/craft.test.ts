@@ -62,3 +62,14 @@ test('craft reobserves a remembered nearby table instead of treating memory as c
  visible=false;bot.lookAt=async()=>{looks++;};bot.blockAt=()=>({name:'air'});
  await assert.rejects(world.execute('craft',new AbortController().signal,{craft:{item:'oak_planks',count:1}}),/Missing/);
 });
+
+test('selected distant workstation is approached before crafting; partial batch inventory survives cancellation',async()=>{
+ const {world,bot}=fixture();const vec=(x:number,y:number,z:number):any=>({x,y,z,scaled:(n:number)=>vec(x*n,y*n,z*n),offset:(a:number,b:number,c:number)=>vec(x+a,y+b,z+c)});
+ const position=vec(10,0,0),table={name:'crafting_table',position};let arrived=false,count=0;
+ world.visible=[];world.knownPlaces=()=>[{name:'crafting_table',position,lastSeen:1}];world.blockInSight=()=>arrived;
+ bot.entity={position:vec(0,0,0)};world.navigate=async()=>{arrived=true;};bot.blockAt=()=>{assert.ok(arrived);return table;};bot.lookAt=async()=>{};
+ bot.inventory.items=()=>[{name:'oak_planks',type:2,count}];bot.recipesFor=(_a:any,_b:any,_c:any,t:any)=>t?[{result:{count:4},delta:[]}]:[];
+ const c=new AbortController();bot.craft=async()=>{assert.ok(arrived);count+=4;c.abort();};
+ await assert.rejects(world.execute('craft',c.signal,{modelSelected:true,craft:{item:'oak_planks',count:2,workstation:{x:10,y:0,z:0}}}));
+ const receipt=world.executionReceipt().actionEvidence;assert.equal(receipt.cancelRequested,true);assert.deepEqual(receipt.inventoryDelta,[{item:'oak_planks',delta:4}]);assert.equal(receipt.phaseAtEnd,'crafting');
+});

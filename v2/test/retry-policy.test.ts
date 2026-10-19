@@ -37,10 +37,10 @@ test('turning away from a planned target requests fresh planning rather than ind
  assert.ok(reasons.includes('planned_action_no_longer_available_in_current_observation'));r.close();
 });
 
-test('a remembered but currently unseen mining target is reported as blocked while safe alternative actions remain possible',async()=>{
+test('a remembered mining target permits an approach attempt without a mandatory move first',async()=>{
  const {Runtime}=await import('../src/runtime.js');const w=new MockWorld();w.state.vision!.blocks=[];w.state.places=[{name:'oak_log',position:p.mine!.position,lastSeen:1}];
  const r=new Runtime(w,{plan:async()=>({...p}),choose:async()=>({action:'idle',confidence:1})},{planMs:60000,actionMs:1000,minConfidence:0},()=>{});
- await r.refreshPlan();assert.equal(r.plan.preferred,'mine');assert.match(r.planning.plannerFeedback!,/Invalid first action mine/);assert.ok(!r.planning.replanReasons.includes('planner_error'));r.close();
+ await r.refreshPlan();assert.equal(r.plan.preferred,'mine');assert.equal(r.planning.plannerFeedback,undefined);assert.ok(!r.planning.replanReasons.includes('planner_error'));r.close();
 });
 
 test('increasing a failed craft quantity does not evade retry protection; fewer crafts and changed feasibility can',()=>{

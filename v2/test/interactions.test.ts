@@ -59,7 +59,7 @@ test('give is an observed drop, not a confirmed receipt; repeat drops blocked',a
  await assert.rejects(f.w.execute('give',signal(),p),/receipt pending/);assert.equal(f.counts().tossed,1);
 });
 test('recipient leaving during approach prevents dropping',async()=>{
- const f=fixture();f.w.bot.players.Bob.entity.position=new V(4,0,0);f.w.navigate=async()=>{delete f.w.bot.players.Bob;};await assert.rejects(f.w.execute('give',signal(),{goal:'give',preferred:'give',transfer:{item:'oak_log',count:1,recipient:'Bob'}}),/moved out/);assert.equal(f.counts().tossed,0);
+ const f=fixture();f.w.bot.players.Bob.entity.position=new V(4,0,0);f.w.navigate=async()=>{delete f.w.bot.players.Bob;};await assert.rejects(f.w.execute('give',signal(),{goal:'give',preferred:'give',transfer:{item:'oak_log',count:1,recipient:'Bob'}}),/moved out|target lost/);assert.equal(f.counts().tossed,0);
 });
 test('known block center ray detects occlusion without depending on sparse grid',()=>{
  const f=fixture();delete f.w.blockInSight;f.w.bot.entity.yaw=-Math.PI/2;f.w.bot.entity.pitch=0;
@@ -84,4 +84,14 @@ test('abort inside inventory transfer prevents subsequent click',async()=>{
 
 test('table placement waits for delayed inventory/block acknowledgements instead of false failure',async()=>{
  const f=fixture(),original=f.w.bot.placeBlock;f.w.bot.placeBlock=async()=>{setTimeout(()=>void original(),80);};assert.match(await f.w.execute('place_table',signal()),/Placed crafting_table/);assert.equal(f.inventory.crafting_table,0);
+});
+
+test('partial container transfer preserves both observed deltas and remaining requested count',async()=>{
+ const f=fixture(),open=f.w.bot.openChest;f.w.bot.openChest=async()=>{const w=await open(),withdraw=w.withdraw;w.withdraw=async(t:number,m:number,_n:number)=>{await withdraw(t,m,1);throw Error('Transfer interrupted after one item');};return w;};
+ await assert.rejects(f.w.execute('withdraw',signal(),withdrawal),/after one item/);
+ const evidence=f.w.executionReceipt().actionEvidence;assert.equal(evidence.transfer.requested,2);assert.equal(evidence.transfer.confirmedTransferred,1);assert.equal(evidence.transfer.remaining,1);assert.equal(evidence.inventoryDelta[0].delta,1);
+});
+test('follow stops when selected player becomes occluded without tracking hidden coordinates',async()=>{
+ const f=fixture();f.w.bot.players.Bob.entity.position=new V(10,0,0);let calls=0;f.w.navigate=async()=>{calls++;f.w.entityVisible=()=>false;};
+ await assert.rejects(f.w.execute('follow',signal(),{goal:'follow',preferred:'follow',followPlayer:'Bob'}),/target lost/);assert.equal(calls,1);
 });

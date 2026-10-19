@@ -77,3 +77,24 @@ test('runtime forwards cancelled placement effect in action history instead of o
  world.executionReceipt=()=>({kind:'placement',confirmed:true,cancelRequested:true,blockMatched:true,itemDelta:-1});world.execute=async()=>{r.actionController.abort();throw Error('cancelled after server application');};
  await r.run({action:'place_block',confidence:1},['place_block'],'selector',world.snapshot(),plan);const record=events[0].record;assert.equal(record.outcome,'cancelled');assert.equal(JSON.parse(record.result).confirmed,true);assert.equal(JSON.parse(record.result).executionOutcome,'cancelled');r.close();
 });
+
+test('placement candidates beyond hand reach remain selectable but hidden faces do not',()=>{
+ const f=fixture();f.bot.entity.position=new V(-10,0,0);
+ const sites=f.w.observedPlacementSites();assert.ok(sites.some((s:any)=>s.position.x===position.x&&s.position.y===position.y&&s.position.z===position.z));
+ f.bot.world.raycast=(()=>({})) as any;assert.equal(f.w.observedPlacementSites().length,0);
+});
+test('selected distant placement approaches before dispatch without a separate move action',async()=>{
+ const f=fixture();f.bot.entity.position=new V(-10,0,0);let approaches=0;
+ f.w.navigate=async()=>{approaches++;assert.equal(f.stats().placed,0);f.bot.entity.position=new V(0,0,0);};
+ assert.match(await f.w.execute('place_block',signal(),plan),/Placed/);assert.equal(approaches,1);assert.equal(f.stats().placed,1);
+});
+test('failed approach reports failure and never places at a substitute target',async()=>{
+ const f=fixture();f.bot.entity.position=new V(-10,0,0);f.w.navigate=async()=>{throw Error('No path to selected support');};
+ await assert.rejects(f.w.execute('place_block',signal(),plan),/No path to selected support/);assert.equal(f.stats().placed,0);assert.equal(f.w.executionReceipt().requestIssued,false);
+});
+test('remembered mining target is approached before current hidden block state is read',async()=>{
+ const f=fixture();f.w.visible=[];f.w.knownPlaces=()=>[{name:'dirt',position:reference,lastSeen:1}];let approached=false;
+ const read=f.bot.blockAt;f.bot.blockAt=(p:V)=>{assert.ok(approached);return read(p);};
+ f.w.navigate=async()=>{approached=true;f.w.visible=[{name:'dirt',position:reference,lastSeen:2}];};
+ const result=JSON.parse(await f.w.execute('mine',signal(),{goal:'remove',preferred:'mine',mine:{position:reference,expected:'dirt'}}));assert.equal(result.blockBroken,true);assert.equal(f.stats().dug,1);
+});

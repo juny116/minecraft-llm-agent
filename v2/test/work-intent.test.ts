@@ -63,7 +63,7 @@ test('medium API emits an intent while supervisor sees guidance, gauge semantics
  });
  const p=await api.plan(s,[],new AbortController().signal,null,{longTermGoal:'Survive'} as any);
  assert.ok(p.intent);assert.ok(!p.mine);assert.ok(!p.destination);
- assert.ok(JSON.parse(payloads[0].messages[1].content).allowedProposals.includes('place_table'));
+ assert.ok(!JSON.parse(payloads[0].messages[1].content).allowedProposals.includes('place_table'));
  assert.throws(()=>parsePlan({goal:'x',intent,proposals:[{goal:'table',preferred:'build'}]}),/build is a parameter/);
  s.memoryGuidance=[{id:'fixture',version:1,updatedAt:1,model:'mock',status:'active',text:'Tentative fixture advice',uncertainty:'Synthetic test only',scope:{species:[],equipment:[],health:[0,20],action:'mine'},support:['fixture_episode'],counterexamples:[]}];
  await api.supervise(s,{options:executionOptions(s,p),execution:null,inbox:[],goal:'Survive',plan:p},new AbortController().signal);

@@ -235,7 +235,7 @@ export class Runtime {
    const known=e instanceof Error && /^(No |Log |Equipment |Deposit |Eating |Crafting |Missing |Insufficient |Destination |Player |Unknown item|Invalid crafting|Placement |Withdrawal |Transfer |Invalid transfer|Invalid block|Block )/.test(e.message)?e.message.slice(0,180):`Action ${action} ${signal.reason?.name==='TimeoutError'?'timed out':outcome}`;result=known;}
   finally{
    const after=this.world.snapshot();
-   const receipt=this.world.executionReceipt?.();if(receipt)result=JSON.stringify({...receipt,executionOutcome:outcome,detail:result});
+   const receipt=this.world.executionReceipt?.();if(receipt){let parsed:Record<string,unknown>={};try{const value=JSON.parse(result);if(value&&typeof value==='object')parsed=value;}catch{}result=JSON.stringify({...parsed,...receipt,executionOutcome:outcome,detail:(receipt.actionEvidence as any)?.failureReason??parsed.detail??result});}
    if(!['idle','look'].includes(action)&&outcome!=='succeeded')this.continuationEpoch++;
    this.retries.record(action,plan,after,outcome==='failed'||outcome==='partial',result);
    if(action==='look'){this.lastLookAt=Date.now();let novel=0;for(const b of after.vision?.blocks??[]){const k=JSON.stringify([b.name,b.position]);if(!this.knownViews.has(k))novel++;this.knownViews.add(k);}

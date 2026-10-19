@@ -48,7 +48,7 @@ Ctrl-C로 종료합니다. 목표는 선택 사항이며 `.env` 대신 실행 �
 
 기본 `TARGET_POLICY=observed`에서는 LLM이 작업 의도를 주고 JEV가 대상을 고릅니다. `planner`는 이전 정책과의 비교용입니다. `JEV_ARGUMENT_CONTRACT`의 기본값은 `legacy`, `JEV_WITHDRAWAL_MODE`는 `direct`입니다. `direct`는 모든 액션에서 인자 선택 후 추가 승인 없이 실행을 시도하며 최신 상태 검사는 유지합니다. `coordinated`, `joint`, `separate`, `proposal` 등 비교 설정이 있으며 최신 검증 결과가 기본 설정 전체에 적용되는 것은 아닙니다. [구조](docs/ARCHITECTURE.md) · [검증 현황](docs/VALIDATION.md)
 
-`JEV_LOOK_BINDING=parallel-branches`는 `coordinated`/`direct` 설정에서 look 인자를 한 요청에 묶는 비교 옵션입니다. 모든 1도 단위 각도를 유지하며 기본값은 `sequential`입니다. `relative-branches`는 동일한 2회 구조에서 현재 시선 대비 회전량과 절대각도 범위를 함께 제시하는 비교 옵션이며, 저장 입력의 실제 API 검증까지 완료했습니다. 실제 서버에서 선택 지연 감소는 확인했지만, 생산적인 작업·목표 완료 개선은 확인되지 않았습니다.
+실제 서버는 가림을 유지한 사방 자동 관측을 사용하며 `look`을 선택지에 제공하지 않습니다. `JEV_LOOK_BINDING`과 시선 실행 코드는 과거 비교 도구 호환용입니다. 제작대 설치는 `place_block`으로 통합했습니다. 채굴·설치·작업대 제작·상자 작업은 대상까지 접근하는 과정을 포함하며, `move`는 이동 자체가 목적일 때 사용합니다.
 
 `JEV_ARGUMENT_BINDING=independent`는 `coordinated`/`direct`에서 설치 재료·위치와 일반 상자의 보관 대상·아이템을 같은 요청으로 묶는 비교 옵션입니다. 수량은 선택한 아이템 이후에, 화로의 슬롯·아이템은 기존 순서대로 선택합니다. 기본값은 `sequential`입니다. 호출 지연은 줄었지만 전체 공백·행동 품질 개선은 확인하지 못했습니다.
 

@@ -40,6 +40,7 @@ export class MineflayerWorld implements World {
   private memory = new PlaceMemory();
   private visible: import('./vision.js').SeenBlock[] = [];
   private observedAt = 0;
+  private occlusion:NonNullable<Snapshot['perception']>['occlusion']=[];
   private navigationHintMovements?:ReturnType<typeof observedMovements>;private navigationHintsAt=0;private navigationHints:import('./vision.js').Position[]=[];
   private navigationTargets(){
     if(!this.ready)return [];const now=Date.now();if(now-this.navigationHintsAt<2000)return structuredClone(this.navigationHints);this.navigationHintsAt=now;
@@ -106,7 +107,7 @@ export class MineflayerWorld implements World {
     await this.bot.lookAt(p.offset(0,.05,0),false);this.observe(true);signal.throwIfAborted();
     let abort=()=>{};let rejectDanger:(error:Error)=>void=()=>{};
     const interrupted=new Promise<never>((_,reject)=>{rejectDanger=reject;abort=()=>{this.stop();reject(signal.reason);};signal.addEventListener('abort',abort,{once:true});});
-    const monitor=setInterval(()=>{if(!modelSelected&&this.enemies().length){this.stop();rejectDanger(new Error('Visible danger interrupted pickup'));}},50);
+    const monitor=setInterval(()=>{const target=this.bot.entities[id];if(!target||!this.entityVisible(target)){this.stop();rejectDanger(new Error('Pickup target lost; inventory must confirm receipt'));return;}if(!modelSelected&&this.enemies().length){this.stop();rejectDanger(new Error('Visible danger interrupted pickup'));}},50);
     try{await Promise.race([this.navigate(new goals.GoalNear(Math.floor(p.x),Math.floor(p.y),Math.floor(p.z),0),signal),interrupted]);}
     finally{clearInterval(monitor);signal.removeEventListener('abort',abort);this.stop();}
   }
@@ -123,11 +124,16 @@ export class MineflayerWorld implements World {
       await delay(450,undefined,{signal:active});result.status='finished';
     }catch(error){result.status=active.aborted?'cancelled':'failed';result.detail=error instanceof Error?error.message.slice(0,180):'Pickup failed';}
     finally{this.stop();this.bot.removeListener('health',onHealth);result.inventoryGained=inventoryGains(before,totals());result.elapsedMs=Date.now()-started;}
+    if(!signal.aborted&&result.detail?.startsWith('Pickup target lost')&&result.inventoryGained.some(i=>i.name===result.target?.expected&&i.count>0)){result.status='finished';result.detail='Target lost and matching inventory gain observed; origin remains unconfirmed';}
     if(result.status==='finished'&&!result.inventoryGained.some(i=>i.name===result.target?.expected&&i.count>0)){result.status='failed';result.detail='No matching inventory gain observed; disappearance is not receipt';}
     return JSON.stringify(result);
   }
+  private actionReceipt?:Record<string,unknown>;
+  private transferEvidence?:{item:string;requested:number;inventoryBefore:number;containerBefore:number;containerAfter?:number};
+  private transferSnapshot(){return this.transferEvidence;}
+  private phase(value:import('./types.js').MotorProgress['phase'],meaning:string){this.motor={phase:value,at:Date.now(),blockBroken:false,phaseMeaning:meaning};}
   private placementReceipt?:Record<string,unknown>;
-  executionReceipt(){return this.placementReceipt?structuredClone(this.placementReceipt):undefined;}
+  executionReceipt(){return this.placementReceipt||this.actionReceipt?structuredClone({...this.placementReceipt,...(this.actionReceipt?{actionEvidence:this.actionReceipt}:{})}):undefined;}
   private motor?:{placementRequestIssued?:boolean;phaseMeaning?:string;phase:import('./types.js').MotorProgress['phase'];at:number;estimatedDigMs?:number;digBudgetMs?:number;estimateCapped?:boolean;blockBroken:boolean};
   executionProgress():import('./types.js').MotorProgress|undefined{return this.motor?{phase:this.motor.phase,placementRequestIssued:this.motor.placementRequestIssued,phaseMeaning:this.motor.phaseMeaning,phaseElapsedMs:Math.max(0,Date.now()-this.motor.at),estimatedDigMs:this.motor.estimatedDigMs,digBudgetMs:this.motor.digBudgetMs,estimateCapped:this.motor.estimateCapped,estimatedRemainingMs:this.motor.phase==='digging'&&this.motor.estimatedDigMs!==undefined?Math.max(0,this.motor.estimatedDigMs-(Date.now()-this.motor.at)):undefined,blockBroken:this.motor.blockBroken}:undefined;}
   private async mineBlock(signal:AbortSignal,plan?:Plan){
@@ -150,8 +156,9 @@ export class MineflayerWorld implements World {
     const onDrop=()=>{scan();};
     try{
       validateDig(plan?.mine!);const request=plan!.mine!;
-      if(!this.visible.some(b=>sameCell(b.position,request.position)&&b.name===request.expected))throw Error('Block target not currently observed');
+      if(!this.visible.some(b=>sameCell(b.position,request.position)&&b.name===request.expected)&&!this.knownPlaces().some(b=>sameCell(b.position,request.position)&&b.name===request.expected))throw Error('Block target has no observation evidence');
       const cell=request.position,vec=this.bot.entity.position.scaled(0).offset(cell.x,cell.y,cell.z);
+      if(!this.visible.some(b=>sameCell(b.position,cell))) {await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,MINE_APPROACH_RADIUS),active);this.observe(true);if(!this.visible.some(b=>sameCell(b.position,cell)))throw Error('Remembered mining target not observable after approach');}
       target=this.bot.blockAt(vec);if(!target||target.name!==request.expected)throw Error('Block target changed');const stateId=target.stateId;
       if(!this.bot.canDigBlock(target))await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,MINE_APPROACH_RADIUS),active);
       active.throwIfAborted();await this.bot.lookAt(vec.offset(.5,.5,.5),false);active.throwIfAborted();
@@ -185,8 +192,8 @@ export class MineflayerWorld implements World {
       const pickupSignal=AbortSignal.any([active,AbortSignal.timeout(MINE_PICKUP_MS)]);
       const stopPickup=()=>this.stop();pickupSignal.addEventListener('abort',stopPickup,{once:true});
       try{
-        await delay(250,undefined,{signal:pickupSignal});
-        const drops=scan();
+        await delay(100,undefined,{signal:pickupSignal});
+        let drops=scan();while(!drops.length){await delay(50,undefined,{signal:pickupSignal});drops=scan();}
         if(drops.length&&(plan?.modelSelected||!this.enemies().length)){
           await this.collectVisibleDrop(drops[0].id,pickupSignal,plan?.modelSelected);
           await delay(250,undefined,{signal:pickupSignal});scan();
@@ -198,7 +205,7 @@ export class MineflayerWorld implements World {
     finally{
       this.bot.removeListener('itemDrop',onDrop);this.bot.removeListener('health',onHealth);active.removeEventListener('abort',abort);
       result.attemptMs=digStarted===undefined?0:(digEnded??Date.now())-digStarted;result.elapsedMs=Date.now()-started;
-      result.inventoryGained=inventoryGains(before,totals());if(result.inventoryGained.length)result.pickup='inventory_gain_observed';this.motor=undefined;
+      result.inventoryGained=inventoryGains(before,totals());if(result.inventoryGained.length){result.pickup='inventory_gain_observed';if(result.detail?.startsWith('Pickup target lost'))result.detail='Matching inventory gain observed after target disappeared; origin remains unconfirmed';}this.motor=undefined;
     }
     return JSON.stringify(result);
   }
@@ -210,9 +217,10 @@ export class MineflayerWorld implements World {
     const phase=(value:import('./types.js').MotorProgress['phase'],meaning:string)=>{this.motor={phase:value,at:Date.now(),blockBroken:false,placementRequestIssued:issued,phaseMeaning:meaning};};
     phase('approach','Approaching the selected support; no placement request issued.');
     try{
-    const observed=this.visible.find(b=>sameCell(b.position,cell));
+    const observed=this.visible.find(b=>sameCell(b.position,cell))??this.knownPlaces().find(b=>sameCell(b.position,cell));
     if(!observed)throw Error('Block target not currently observed');
     const vec=this.bot.entity.position.scaled(0).offset(cell.x,cell.y,cell.z);
+    if(!this.visible.some(b=>sameCell(b.position,cell))) {await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,3),signal);this.observe(true);if(!this.visible.some(b=>sameCell(b.position,cell)))throw Error('Remembered support not observable after approach');}
     let block=this.bot.blockAt(vec);
     if(!block||block.name!==observed.name)throw Error('Block target changed');
     const stateId=block.stateId;
@@ -236,7 +244,8 @@ export class MineflayerWorld implements World {
       const contact=vec.offset(.5+face.x*.5,.5+face.y*.5,.5+face.z*.5);
       phase('aiming','Aiming at the selected face; no placement request issued.');await this.bot.lookAt(contact,false);signal.throwIfAborted();
       const eye=this.bot.entity.position.offset(0,1.62,0),delta=contact.minus(eye),length=delta.norm();
-      if(length>4.5||length<.05||this.bot.world.raycast(eye,delta.scaled(1/length),length-.02))throw Error('Block placement face occluded');
+      if(length>4.5)throw Error('Selected placement face remains outside reach after approach');
+      if(length<.05||this.bot.world.raycast(eye,delta.scaled(1/length),length-.02))throw Error('Selected placement face occluded after approach');
       block=fresh();free();signal.throwIfAborted();this.bot.setControlState('sneak',true);
       issued=true;phase('placing','Placement operation requested; server effect may occur even if cancelled.');await this.bot.placeBlock(block,face);phase('confirming','Checking block and inventory evidence; cancellation cannot undo a server placement.');signal.throwIfAborted();
       for(let i=0;i<20&&(this.bot.blockAt(target)?.name!==build.item||this.itemCount(build.item)!==before-1);i++)await delay(50,undefined,{signal});
@@ -304,17 +313,34 @@ export class MineflayerWorld implements World {
       const r=plan.transfer;if(!r||!r.slot||!['input','fuel','output'].includes(r.slot)||!Number.isInteger(r.count)||r.count<1||r.count>64)throw Error('Invalid furnace transfer');
       if(action==='deposit'&&r.slot==='output')throw Error('Invalid furnace output deposit');
       const before=this.itemCount(r.item),slot={input:0,fuel:1,output:2}[r.slot];
+      this.transferEvidence={item:r.item,requested:r.count,inventoryBefore:before,containerBefore:window.slots[slot]?.name===r.item?window.slots[slot].count:0};this.phase('transferring','Furnace transfer: processing may change slots; inventory alone is not paired confirmation.');
       const item=action==='deposit'?this.bot.inventory.items().find(i=>i.name===r.item):window.slots[slot];
       if(!item||item.name!==r.item||(action==='deposit'?this.itemCount(r.item):item.count)<r.count)throw Error('Insufficient furnace transfer stock');
       signal.throwIfAborted();
       if(action==='deposit'){if(r.slot==='input')await window.putInput(item.type,item.metadata,r.count);else await window.putFuel(item.type,item.metadata,r.count);}
       else await this.bot.transfer({window,itemType:item.type,metadata:item.metadata,count:r.count,sourceStart:slot,sourceEnd:slot+1,destStart:window.inventoryStart,destEnd:window.inventoryEnd});
-      signal.throwIfAborted();remember();window.close();window=undefined;
+      signal.throwIfAborted();if(this.transferEvidence)this.transferEvidence.containerAfter=window.slots[slot]?.name===r.item?window.slots[slot].count:0;remember();window.close();window=undefined;
       const expected=action==='deposit'?-r.count:r.count;
       for(let i=0;i<20&&this.itemCount(r.item)-before!==expected;i++)await delay(50,undefined,{signal});
       if(this.itemCount(r.item)-before!==expected)throw Error('Furnace transfer not confirmed');
       return JSON.stringify({kind:'furnace_transfer',action,item:r.item,count:r.count,slot:r.slot,inventoryDelta:expected,processingComplete:false});
-    }finally{if(window){remember();window.close();}}
+    }finally{if(window){if(this.transferEvidence&&plan?.transfer?.slot){const slot={input:0,fuel:1,output:2}[plan.transfer.slot];this.transferEvidence.containerAfter=window.slots[slot]?.name===this.transferEvidence.item?window.slots[slot].count:0;}remember();window.close();}}
+  }
+  private async approachPlayer(name:string,signal:AbortSignal,radius=2){
+    const deadline=Date.now()+8000;
+    while(Date.now()<deadline){
+      signal.throwIfAborted();const e=this.bot.players[name]?.entity;
+      if(!e||!this.entityVisible(e))throw Error('Player target lost; last seen position is not current tracking');
+      if(e.position.distanceTo(this.bot.entity.position)<=radius)return;
+      const point={x:e.position.x,y:e.position.y,z:e.position.z},update=new AbortController();let moved=false;
+      this.phase('tracking','Approaching the selected visible player; recheck visibility and target movement.');
+      const monitor=setInterval(()=>{const now=this.bot.players[name]?.entity;if(!now||!this.entityVisible(now)){update.abort(new Error('Player target lost during approach'));return;}if(distance(now.position,point)>1){moved=true;update.abort(new Error('Visible player moved; update same target'));}},100);
+      try{await this.navigate(new goals.GoalNear(point.x,point.y,point.z,radius),AbortSignal.any([signal,update.signal]));}
+      catch(e){if(signal.aborted)throw signal.reason;if(!moved)throw update.signal.reason??e;}
+      finally{clearInterval(monitor);}
+      if(!moved){const current=this.bot.players[name]?.entity;if(!current||!this.entityVisible(current))throw Error('Player target lost after approach');if(current.position.distanceTo(this.bot.entity.position)>radius)throw Error('Player approach ended outside requested distance; reassess');}
+    }
+    throw Error('Player approach time limit; target not reached');
   }
   private async interact(action:Action,signal:AbortSignal,plan?:Plan){
     // Inventory helpers perform multiple clicks. Stop before every new click after cancellation.
@@ -343,26 +369,26 @@ export class MineflayerWorld implements World {
         let target=this.bot.players[request.recipient]?.entity;
         if(!target||!this.entityVisible(target))throw Error('Player not visible');
         const before=this.itemCount(request.item);if(before<request.count)throw Error('Insufficient carried items');
-        if(target.position.distanceTo(this.bot.entity.position)>2)await this.navigate(new goals.GoalNear(target.position.x,target.position.y,target.position.z,2),signal);
+        await this.approachPlayer(request.recipient,signal,2);
         signal.throwIfAborted();target=this.bot.players[request.recipient]?.entity;
         if(!target||!this.entityVisible(target)||target.position.distanceTo(this.bot.entity.position)>3)throw Error('Player moved out of reach');
         await this.bot.lookAt(target.position.offset(0,1,0),false);signal.throwIfAborted();
         const item=this.bot.inventory.items().find(i=>i.name===request.item);if(!item||this.itemCount(request.item)<request.count)throw Error('Insufficient carried items');
         signal.throwIfAborted();this.recentDrops.set(dropKey,Date.now());
-        await this.bot.toss(item.type,item.metadata,request.count);signal.throwIfAborted();
+        this.phase('transferring','Dropping toward selected visible recipient; receipt remains unconfirmed.');await this.bot.toss(item.type,item.metadata,request.count);signal.throwIfAborted();
         const removed=before-this.itemCount(request.item);
         if(removed!==request.count)throw Error('Transfer drop not confirmed');
         return JSON.stringify({outcome:'dropped_receipt_unconfirmed',recipient:request.recipient,item:request.item,count:removed,receiptConfirmed:false});
       }
       const p=plan?.container;if(!p)throw Error('Missing container');
-      if(!this.visible.some(b=>['chest','furnace','blast_furnace','smoker'].includes(b.name)&&samePosition(b.position,p)))throw Error('No visible requested container');
+      if(!this.visible.some(b=>['chest','furnace','blast_furnace','smoker'].includes(b.name)&&samePosition(b.position,p))&&!this.knownPlaces().some(b=>['chest','furnace','blast_furnace','smoker'].includes(b.name)&&samePosition(b.position,p)))throw Error('Requested container has no observation evidence');
       const vec=this.bot.entity.position.scaled(0).offset(p.x,p.y,p.z);
-      await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2),signal);signal.throwIfAborted();
+      this.phase('approach','Approaching selected container; no transfer yet.');await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2),signal);signal.throwIfAborted();
       await this.bot.lookAt(vec.offset(.5,.5,.5),false);signal.throwIfAborted();
       const chest=this.bot.blockAt(vec);if(!chest||!['chest','furnace','blast_furnace','smoker'].includes(chest.name)||!this.blockInSight(chest))throw Error('No visible requested container');
       if(chest.name!=='chest')return await this.furnaceInteraction(chest,action,signal,plan!);
       if(plan?.transfer?.slot)throw Error('Invalid transfer slot for chest');
-      window=await this.bot.openChest(chest);signal.throwIfAborted();this.rememberChest(window,p);
+      this.phase('opening','Opening selected observed container; contents are not yet confirmed.');window=await this.bot.openChest(chest);signal.throwIfAborted();this.rememberChest(window,p);
       if(action==='inspect_container')return JSON.stringify({outcome:'chest_observed',...this.containers.at(-1)});
       const request=plan?.transfer;if(!request||!Number.isInteger(request.count)||request.count<1||request.count>64)throw Error('Invalid transfer');
       const depositing=action==='deposit';
@@ -370,17 +396,19 @@ export class MineflayerWorld implements World {
       const item=stock.find(i=>i.name===request.item);
       if(!item||stock.filter(i=>i.name===request.item&&i.metadata===item.metadata).reduce((n,i)=>n+i.count,0)<request.count)throw Error(depositing?'Insufficient carried items':'Insufficient items in chest');
       const before=this.itemCount(request.item),chestBefore=window.containerItems().filter(i=>i.name===request.item).reduce((n,i)=>n+i.count,0);
+      this.transferEvidence={item:request.item,requested:request.count,inventoryBefore:before,containerBefore:chestBefore};this.phase('transferring','Transfer may partially apply before confirmation or cancellation.');
       signal.throwIfAborted();
       if(depositing)await window.deposit(item.type,item.metadata,request.count);else await window.withdraw(item.type,item.metadata,request.count);
       signal.throwIfAborted();
       const direction=depositing?1:-1;
       for(let i=0;i<20&&window.containerItems().filter(i=>i.name===request.item).reduce((n,i)=>n+i.count,0)-chestBefore!==direction*request.count;i++)await delay(50,undefined,{signal});
       const chestAfter=window.containerItems().filter(i=>i.name===request.item).reduce((n,i)=>n+i.count,0);
+      this.transferEvidence.containerAfter=chestAfter;
       this.rememberChest(window,p);window.close();window=undefined;
       for(let i=0;i<20&&before-this.itemCount(request.item)!==direction*request.count;i++)await delay(50,undefined,{signal});
       if(before-this.itemCount(request.item)!==direction*request.count||chestAfter-chestBefore!==direction*request.count)throw Error(depositing?'Deposit not confirmed':'Withdrawal not confirmed');
       return `${depositing?'Deposited':'Withdrew'} ${request.count} ${request.item}`;
-    }finally{if(window){this.rememberChest(window,plan?.container);window.close();}this.bot.clickWindow=original;}
+    }finally{if(window){if(this.transferEvidence)this.transferEvidence.containerAfter=window.containerItems().filter(i=>i.name===this.transferEvidence!.item).reduce((n,i)=>n+i.count,0);this.rememberChest(window,plan?.container);window.close();}this.bot.clickWindow=original;}
   }
 
   private logs() { return this.bot.inventory.items().filter(i => /(_log|_stem)$/.test(i.name)); }
@@ -396,7 +424,8 @@ export class MineflayerWorld implements World {
       const hit=this.bot.world.raycast(eye,eye.scaled(0).offset(d.x,d.y,d.z),48) as unknown as {name:string;position:typeof eye} | null;
       return hit ? {name:hit.name,position:hit.position} : null;
     };
-    const observed=[...sampleSurroundings(cast,this.observedAt),...sampleView(e.yaw,e.pitch,cast,this.observedAt)];
+    const observed=sampleSurroundings(cast,this.observedAt);
+    this.occlusion=[['east',1,0,0],['west',-1,0,0],['up',0,1,0],['down',0,-1,0],['south',0,0,1],['north',0,0,-1]].map(([direction,x,y,z])=>{const hit=cast({x:Number(x),y:Number(y),z:Number(z)});return {direction:String(direction),surface:hit?{name:hit.name,position:{...hit.position},lastSeen:this.observedAt}:null};});
     this.visible=[...new Map(observed.map(b=>[`${b.position.x},${b.position.y},${b.position.z}`,b])).values()];
     this.memory.observe(this.visible);
     this.containers=this.containers.filter(c=>!this.visible.some(b=>samePosition(b.position,c.position)&&!['chest','furnace','blast_furnace','smoker'].includes(b.name)));
@@ -524,7 +553,7 @@ export class MineflayerWorld implements World {
       const ref=this.bot.entity.position.scaled(0).offset(b.position.x,b.position.y,b.position.z);
       for(const [x,y,z] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]){
         const target=ref.offset(x,y,z),contact=ref.offset(.5+x*.5,.5+y*.5,.5+z*.5),delta=contact.minus(eye),length=delta.norm();
-        if(length<.05||length>4.5||this.bot.world.raycast(eye,delta.scaled(1/length),length-.02))continue;
+        if(length<.05||length>48||this.bot.world.raycast(eye,delta.scaled(1/length),length-.02))continue;
         if(this.bot.blockAt(target)?.name!=='air'||overlapsCell(target,this.bot.entity.position))continue;
         sites.push({position:{x:target.x,y:target.y,z:target.z},reference:{...b.position}});
       }
@@ -536,12 +565,14 @@ export class MineflayerWorld implements World {
     const position = this.bot.entity?.position ?? { x: 0, y: 0, z: 0 };
     const logs = this.ready ? this.count() : 0;
     const table=this.ready ? this.table() : null;
+    const knownTables=this.ready?this.knownPlaces().some(b=>b.name==='crafting_table'&&distance(b.position,position)<=48):false;
+    const inventoryCraftable:string[]=[];
     const craftable=this.ready ? [...new Set(this.recipeBook.snapshot().unlocked.map(id=>id.replace(/^minecraft:/,'')).filter(name=>{
       const item=this.bot.registry.itemsByName[name];
-      return item && this.bot.recipesFor(item.id,null,1,table).length>0;
+      if(!item)return false;const byHand=this.bot.recipesFor(item.id,null,1,null).length>0;if(byHand)inventoryCraftable.push(name);return byHand||this.bot.recipesFor(item.id,null,1,table??knownTables).length>0;
     }))] : [];
     const knownPlaces=this.knownPlaces();
-    const snapshot:Snapshot={ perception:{mode:'panorama',range:48},importantPlaces:this.importantPlaces?.snapshot()??[],placementSites:this.ready?this.observedPlacementSites():[],edibleItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>this.bot.registry.foodsByName[i.name]).map(i=>i.name))]:[],observedDestinationKeys:knownPlaces.map(b=>[b.position.x,b.position.y,b.position.z].join(',')),navigationTargets:this.navigationTargets(),visibleItems:this.ready?this.visibleItems():[],placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
+    const snapshot:Snapshot={ inventoryCraftable,perception:{mode:'panorama',range:48,occlusion:this.occlusion,semantics:'Automatic all-direction first-hit sampling; no look needed. First-hit surfaces occlude space behind them. occlusion lists six sampled axis rays only, not entire sectors: a surface blocks that ray beyond it; null means no surface hit within range, not a known empty volume. Unsampled or beyond-range space is unknown, not empty; remembered cells are past observations.'},importantPlaces:this.importantPlaces?.snapshot()??[],placementSites:this.ready?this.observedPlacementSites():[],edibleItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>this.bot.registry.foodsByName[i.name]).map(i=>i.name))]:[],observedDestinationKeys:knownPlaces.map(b=>[b.position.x,b.position.y,b.position.z].join(',')),navigationTargets:this.navigationTargets(),visibleItems:this.ready?this.visibleItems():[],placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
       vision: {yaw:this.bot.entity?.yaw ?? 0,pitch:this.bot.entity?.pitch ?? 0,blocks:structuredClone(this.visible)}, places:structuredClone(knownPlaces),craftable,
       dimension:String(this.bot.game?.dimension??'unknown'),environment:{inWater:!!(this.bot.entity as any)?.isInWater,inLava:!!(this.bot.entity as any)?.isInLava,onGround:!!this.bot.entity?.onGround,oxygen:(this.bot as any).oxygenLevel},lifecycle:{generation:this.generation,deathCount:this.deathCount,phase:this.dead?'dead':this.ready?'alive':'connecting',lastDeath:this.recovery.context().deaths.at(-1)},recovery:this.recovery.context(),
       ready: this.ready, health: this.bot.health ?? 0, food: this.bot.food ?? 0, logs,
@@ -554,6 +585,23 @@ export class MineflayerWorld implements World {
     return snapshot;
   }
   async execute(action: Action, signal: AbortSignal, plan?: Plan) {
+    this.actionReceipt=undefined;this.placementReceipt=undefined;this.transferEvidence=undefined;
+    const totals=()=>{const t:Record<string,number>={};for(const i of this.bot?.inventory?.items?.()??[])if(i.name)t[i.name]=(t[i.name]??0)+i.count;return t;};
+    const position=()=>{const p=this.bot?.entity?.position;return p?{x:p.x,y:p.y,z:p.z}:null;};
+    const before=totals(),from=position(),started=Date.now();let returned:string|undefined,failure:string|undefined,phaseAtEnd:string|undefined;
+    this.phase('prepare','Validating selected action; no completion claimed.');
+    try{returned=await this.executeAction(action,signal,plan);return returned;}
+    catch(e){failure=e instanceof Error?e.message:String(e);throw e;}
+    finally{
+      phaseAtEnd=this.motor?.phase;const after=totals();const inventoryDelta=Object.keys({...before,...after}).map(item=>({item,delta:(after[item]??0)-(before[item]??0)})).filter(x=>x.delta);
+      let parsed:any;try{parsed=JSON.parse(returned??'');}catch{}
+      const t=this.transferSnapshot(),delta=t?(after[t.item]??0)-t.inventoryBefore:undefined;
+      const transfer=t?{item:t.item,requested:t.requested,inventoryDelta:delta,containerDelta:t.containerAfter===undefined?null:t.containerAfter-t.containerBefore,confirmedTransferred:t.containerAfter!==undefined&&delta===-(t.containerAfter-t.containerBefore)?Math.max(0,Math.min(t.requested,action==='deposit'?-delta!:delta!)):null}:undefined;
+      this.actionReceipt={action,target:plan?.mine??plan?.build??plan?.craft??plan?.container??plan?.pickup??plan?.followPlayer??plan?.destination??plan?.targetEntityId??null,phaseAtEnd,elapsedMs:Date.now()-started,cancelRequested:signal.aborted,returned:returned!==undefined,failureReason:failure??parsed?.detail,reportedStatus:parsed?.status??parsed?.outcome,from,to:position(),inventoryDelta,...(transfer?{transfer:{...transfer,remaining:transfer.confirmedTransferred===null?null:t!.requested-transfer.confirmedTransferred}}:{}),meaning:'Observed changes and execution outcome are separate. Inventory deltas alone do not prove item origin, recipient receipt or task completion. Missing confirmation is unknown, not zero effect.'};
+      this.motor=undefined;
+    }
+  }
+  private async executeAction(action: Action, signal: AbortSignal, plan?: Plan) {
     this.placementReceipt=undefined;signal.throwIfAborted();
     const cancel = () => this.stop(); signal.addEventListener('abort', cancel, { once: true });
     let window: Awaited<ReturnType<mineflayer.Bot['openChest']>> | undefined;
@@ -564,7 +612,7 @@ export class MineflayerWorld implements World {
       if(action==='mine')return await this.mineBlock(signal,plan);
       if(action==='place_block'||action==='place_table'&&plan?.modelSelected)return await this.buildAction('place_block',signal,plan);
       if(['place_table','inspect_container','withdraw','deposit','give'].includes(action))return await this.interact(action,signal,plan);
-      if(action==='attack'||action==='flee')return await this.fight(action,signal,plan);
+      if(action==='attack'||action==='flee'){this.phase('tracking','Bounded combat against selected observed enemy; target loss is not death.');return await this.fight(action,signal,plan);}
       if (action === 'look') {
         await this.bot.look(plan?.look?.yaw ?? this.bot.entity.yaw+Math.PI/2, plan?.look?.pitch ?? (Math.abs(this.bot.entity.pitch)<.2?-Math.PI/4:0), false);
         this.observe(true);
@@ -572,8 +620,8 @@ export class MineflayerWorld implements World {
       if (action === 'move') {
         const p=plan?.destination;
         if (!p || !knownDestination({places:this.knownPlaces(),dimension:String(this.bot?.game?.dimension??''),recovery:this.recovery?.context(),importantPlaces:this.importantPlaces?.snapshot()??[]},p)) throw new Error('Destination not observed');
-        await this.navigate(new goals.GoalNear(p.x,p.y,p.z,MOVE_RADIUS),signal);
-        this.observe(true);
+        this.phase('approach','Moving to selected coordinate; arrival is not proof of task reach or safety.');await this.navigate(new goals.GoalNear(p.x,p.y,p.z,MOVE_RADIUS),signal);
+        this.observe(true);return JSON.stringify({kind:'move',outcome:'arrived_within_radius',target:p,radius:MOVE_RADIUS,meaning:'Arrival is not proof of route safety or reach for another task.'});
       }
       if (action === 'craft') {
         const request=plan?.craft;
@@ -582,14 +630,24 @@ export class MineflayerWorld implements World {
         if(!item) throw new Error('Unknown item');
         const inventoryRecipe=this.bot.recipesFor(item.id,null,1,null)[0];
         let table=inventoryRecipe ? null : this.table();
-        if(!inventoryRecipe&&!table){
-          // Reorient toward a previously observed nearby workstation; memory is not visibility.
+        if(!inventoryRecipe&&request.workstation){
+          const p=request.workstation,known=this.visible?.find(b=>samePosition(b.position,p))??this.knownPlaces().find(b=>samePosition(b.position,p));
+          if(known?.name!=='crafting_table')throw Error('No observed selected workstation');
+          this.phase('approach','Approaching selected workstation; crafting has not started.');
+          await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2),signal);signal.throwIfAborted();this.observe(true);
+          const v=this.bot.entity.position.scaled(0).offset(p.x,p.y,p.z),observed=this.bot.blockAt(v);
+          if(observed?.name!=='crafting_table'||!this.blockInSight(observed))throw Error('Selected workstation changed or occluded after approach');
+          table=observed;
+        }else if(!inventoryRecipe&&!table&&!plan?.modelSelected){
           const remembered=this.knownPlaces().filter(b=>b.name==='crafting_table').sort((a,b)=>Math.hypot(a.position.x-this.bot.entity.position.x,a.position.y-this.bot.entity.position.y,a.position.z-this.bot.entity.position.z)-Math.hypot(b.position.x-this.bot.entity.position.x,b.position.y-this.bot.entity.position.y,b.position.z-this.bot.entity.position.z))[0];
-          if(remembered&&Math.hypot(remembered.position.x-this.bot.entity.position.x,remembered.position.y-this.bot.entity.position.y,remembered.position.z-this.bot.entity.position.z)<=6){
+          if(remembered&&Math.hypot(remembered.position.x-this.bot.entity.position.x,remembered.position.y-this.bot.entity.position.y,remembered.position.z-this.bot.entity.position.z)<=48){
+            this.phase('approach','Approaching remembered workstation; existence remains unconfirmed.');
+            await this.navigate(new goals.GoalNear(remembered.position.x,remembered.position.y,remembered.position.z,2),signal);
             signal.throwIfAborted();await this.bot.lookAt(this.bot.entity.position.scaled(0).offset(remembered.position.x+.5,remembered.position.y+.5,remembered.position.z+.5),false);signal.throwIfAborted();this.observe(true);table=this.table();
           }
         }
         if(table) {
+          this.phase('approach','Approaching workstation; crafting has not started.');
           await this.navigate(new goals.GoalNear(table.position.x,table.position.y,table.position.z,2),signal);
           signal.throwIfAborted(); await this.bot.lookAt(table.position.offset(.5,.5,.5),false);signal.throwIfAborted();this.observe(true);
           const observed=this.bot.blockAt(table.position);
@@ -605,6 +663,7 @@ export class MineflayerWorld implements World {
         this.bot.clickWindow=((...args: Parameters<typeof originalClick>)=>{
           signal.throwIfAborted(); return originalClick.apply(this.bot,args);
         }) as typeof originalClick;
+        this.phase('crafting','Executing selected recipe batches; inventory changes, not requested count, establish progress.');
         try { for(let i=0;i<request.count;i++){signal.throwIfAborted();await this.bot.craft(recipe,1,table ?? undefined);} }
         finally { this.bot.clickWindow=originalClick; }
         signal.throwIfAborted();
@@ -616,7 +675,8 @@ export class MineflayerWorld implements World {
       if (action === 'follow') {
         const target = this.bot.players[plan?.followPlayer??this.c.follow]?.entity;
         if (!target || !this.entityVisible(target)) throw new Error('Player not visible');
-        await this.navigate(new goals.GoalNear(target.position.x, target.position.y, target.position.z, 2),signal);
+        await this.approachPlayer(plan?.followPlayer??this.c.follow,signal,2);
+        return JSON.stringify({kind:'follow',outcome:'within_distance',player:plan?.followPlayer??this.c.follow,radius:2,meaning:'Reached selected visible player for this bounded action; not a promise of continuous following.'});
       }
       if (action === 'eat') {
         const item = plan?.modelSelected?this.bot.inventory.items().find(i=>i.name===plan.foodItem&&this.bot.registry.foodsByName[i.name]):this.food(); if (!item) throw new Error('No food');

@@ -111,3 +111,9 @@ test('executor estimates after tool equip and survives old one-second request wh
  const result=JSON.parse(await f.w.execute('mine',signal(),{...p,mine:{...p.mine!,maxMs:1000}}));
  assert.equal(saw,true);assert.equal(result.blockBroken,true);assert.equal(result.digBudgetMs,3800);assert.equal(result.estimatedDigMs,1200);assert.equal(f.w.executionProgress(),undefined);
 });
+
+test('drop appearing after the first post-break scan is collected inside the same bounded window',async()=>{
+ const f=setup();let timer:ReturnType<typeof setTimeout>|undefined;
+ f.bot.dig=async()=>{f.breakBlock();timer=setTimeout(()=>f.drop(),350);};f.w.navigate=async()=>f.receive();
+ try{const result=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(result.blockBroken,true);assert.equal(result.dropObservation,'observed_near_target');assert.deepEqual(result.inventoryGained,[{name:'cobblestone',count:1}]);}finally{clearTimeout(timer);}
+});
