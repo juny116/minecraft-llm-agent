@@ -1,3 +1,4 @@
+import {fleeFollowups,FLEE_FOLLOWUP_MEANING} from './combat-followup.js';
 import {mkdirSync,readFileSync,writeFileSync,renameSync,existsSync,unlinkSync,openSync,closeSync} from 'node:fs';
 import {join} from 'node:path';
 import {randomUUID,createHash} from 'node:crypto';
@@ -7,8 +8,38 @@ import {actions} from './types.js';
 export type Episode={id:string;session:string;record:ActionRecord;guidanceUsed:{id:string;version:number}[]};
 export type GuideDraft={supersedes?:string[];revisionReason?:string;id:string;status:'active'|'retired';text:string;uncertainty:string;scope:{species:string[];equipment:string[];health:[number,number];food?:[number,number];hasFood?:boolean;inventory?:{item:string;min:number}[];action:Action};support:string[];counterexamples:string[]};
 export type Guide=GuideDraft&{version:number;updatedAt:number;model:string};
-export type Reflection={maintenance?:boolean;followupWindows?:ReturnType<typeof followupWindows>;feedback?:string;passiveSummary?:{count:number;byAction:Record<string,number>;note:string};revision:number;through:number;episodes:Episode[];guides:Guide[]};
+export type Reflection={fleeFollowups?:{entries:ReturnType<typeof fleeFollowups>;meaning:string};maintenance?:boolean;followupWindows?:ReturnType<typeof followupWindows>;feedback?:string;passiveSummary?:{count:number;byAction:Record<string,number>;note:string};revision:number;through:number;episodes:Episode[];guides:Guide[]};
 type Data={lastMaintenanceAt?:number;schema:1;profile:string;revision:number;reviewed:number;episodes:Episode[];guides:Guide[];revisions:Guide[]};
+function validateGuide(g:any,ids:Set<string>,historical=false){
+  const range=(x:any)=>Array.isArray(x)&&x.length===2&&x.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)&&x[0]<=x[1];
+  if(g?.scope?.food!==undefined&&!range(g.scope.food)||g?.scope?.hasFood!==undefined&&typeof g.scope.hasFood!=='boolean'||g?.scope?.inventory!==undefined&&(!Array.isArray(g.scope.inventory)||g.scope.inventory.length>6||g.scope.inventory.some((t:any)=>!t||!/^[a-z0-9_]+$/.test(t.item)||!Number.isInteger(t.min)||t.min<0||t.min>2304)))throw Error('Invalid guideline situational scope');
+  if(g?.scope&&(!Array.isArray(g.scope.health)||g.scope.health.length!==2||!g.scope.health.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)||g.scope.health[0]>g.scope.health[1]))throw Error('Invalid guideline scope.health: exactly [minimum,maximum] in 0..20; use [0,20] for any health, never []');
+  if(g&&typeof g.text==='string'&&g.text.length>600)throw Error('Invalid guideline text: max 600 characters');
+  if(g&&typeof g.uncertainty==='string'&&g.uncertainty.length>300)throw Error('Invalid guideline uncertainty: max 300 characters');
+  if(g&&Array.isArray(g.support)&&g.support.length>8)throw Error('Invalid guideline support: max 8 episode IDs');
+  if(g&&Array.isArray(g.counterexamples)&&g.counterexamples.length>8)throw Error('Invalid guideline counterexamples: max 8 episode IDs; preserve prior counterexamples');
+  if(Array.isArray(g?.support)&&Array.isArray(g?.counterexamples)&&[...g.support,...g.counterexamples].some(x=>!ids.has(x)))throw Error('Invalid guideline evidence: copy only exact episode IDs supplied in this reflection; no invented or altered IDs');
+  if(Array.isArray(g?.support)&&Array.isArray(g?.counterexamples)&&g.support.some((x:string)=>g.counterexamples.includes(x)))throw Error('Invalid guideline evidence: support and counterexamples must not overlap');
+  const list=(x:any,max:number)=>Array.isArray(x)&&x.length<=max&&x.every((v:any)=>typeof v==='string'&&v.length>0&&v.length<=100);
+  if(!g||typeof g.id!=='string'||!/^[a-zA-Z0-9_-]{1,60}$/.test(g.id)||!['active','retired'].includes(g.status)||typeof g.text!=='string'||!g.text.trim()||g.text.length>600||typeof g.uncertainty!=='string'||!g.uncertainty.trim()||g.uncertainty.length>300||!g.scope||!(actions.includes(g.scope.action)||historical&&['gather','dig_block','inspect_chest'].includes(g.scope.action))||!list(g.scope.species,6)||!list(g.scope.equipment,6)||!Array.isArray(g.scope.health)||g.scope.health.length!==2||!g.scope.health.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)||g.scope.health[0]>g.scope.health[1]||!list(g.support,8)||!g.support.length||!list(g.counterexamples,8)||[...g.support,...g.counterexamples].some(x=>!ids.has(x))||g.support.some((x:string)=>g.counterexamples.includes(x)))throw Error('Invalid or unsupported guideline');
+ }
+
+export function validateReflectionUpdates(input:Reflection,updates:unknown):GuideDraft[]{
+  if(!Array.isArray(updates)||updates.length>32)throw Error('Invalid guideline updates');
+  const lengths=updates.flatMap((g:any,i:number)=>g?.status==='active'?['text','uncertainty'].flatMap(field=>{const max=field==='text'?240:160;return typeof g[field]==='string'&&g[field].length>max?[`updates[${i}].${field}: ${g[field].length} characters > max${max}`]:[];}):[]);
+  if(lengths.length)throw Error('Invalid guideline lengths: '+lengths.join('; '));
+  const ids=new Set(input.episodes.map(e=>e.id));for(const g of updates){
+   validateGuide(g,ids);
+   // Old persisted drafts can be retired verbatim; active revisions must be concise.
+   if(g.status==='active'&&(g.text.length>240||g.uncertainty.length>160))throw Error('Invalid guideline: one concise sentence max240 chars and uncertainty max160 chars');
+   if(g.revisionReason!==undefined&&(typeof g.revisionReason!=='string'||!g.revisionReason.trim()||g.revisionReason.length>240))throw Error('Invalid guideline revision reason');
+   if(g.supersedes!==undefined&&(!Array.isArray(g.supersedes)||!g.supersedes.length||new Set(g.supersedes).size!==g.supersedes.length||g.supersedes.includes(g.id)||g.status!=='active'||typeof g.revisionReason!=='string'||!g.revisionReason.trim()||g.revisionReason.length>240))throw Error('Invalid guideline merge: supersedes must be nonempty other guide IDs, never this draft ID; active status and revisionReason required; omit supersedes when not merging');
+  }
+  const merged=updates.flatMap(g=>g.supersedes??[]);
+  if(new Set(merged).size!==merged.length||merged.some(id=>updates.some(g=>g.id===id)))throw Error('Invalid overlapping guideline merge');
+  if(new Set(updates.map(g=>g.id)).size!==updates.length)throw Error('Duplicate guideline update');
+  return updates as GuideDraft[];
+}
 export class ExperienceMemory {
  readonly session=randomUUID();
  private file:string;private lock:string;private data:Data;
@@ -21,7 +52,7 @@ export class ExperienceMemory {
   const d=JSON.parse(readFileSync(this.file,'utf8'));
   if(d.schema!==1||d.profile!==this.profile||!Array.isArray(d.episodes)||!Array.isArray(d.guides)||!Array.isArray(d.revisions)||!Number.isInteger(d.revision)||!Number.isInteger(d.reviewed))throw Error('Invalid experience memory; preserve file for recovery');
   if(d.episodes.some((e:any)=>typeof e.id!=='string'||!e.record?.decision||!e.record?.before||!e.record?.after))throw Error('Invalid experience episode');
-  for(const g of d.guides)this.validate(g,new Set(d.episodes.map((e:Episode)=>e.id)),true);
+  for(const g of d.guides)validateGuide(g,new Set(d.episodes.map((e:Episode)=>e.id)),true);
   return d;
  }
  private change(fn:(d:Data)=>void){
@@ -63,33 +94,10 @@ export class ExperienceMemory {
   // Revisit earlier choices when later outcomes arrive, including a previously deferred meal.
   const temporal=d.episodes.slice(0,end).filter(e=>batch.some(b=>e.session===b.session&&e.record.endedAt<=b.record.startedAt&&b.record.startedAt-e.record.endedAt<=120000)).slice(-12);
   const episodes=[...new Map([...batch,...temporal,...d.episodes.filter(e=>refs.has(e.id)),...contrasts.slice(-12)].map(e=>[e.id,e])).values()]; // Bounded new/contrast batches plus every active-guide evidence reference; never truncate referenced evidence.
-  return structuredClone({maintenance:this.needsMaintenance(),revision:d.revision,through:end,episodes,guides:relevant,followupWindows:followupWindows(episodes),passiveSummary:{count:passive.length,byAction,note:'Raw episodes retained. Unchanged successful idle/look summarized; this does not prove no new visual information. Only explicitly supplied episode IDs may support guidance.'}});
+  return structuredClone({maintenance:this.needsMaintenance(),revision:d.revision,through:end,episodes,guides:relevant,followupWindows:followupWindows(episodes),...(()=>{const entries=fleeFollowups(d.episodes.slice(Math.max(0,end-64),end).map(e=>e.record));return entries.length?{fleeFollowups:{entries,meaning:FLEE_FOLLOWUP_MEANING}}:{};})(),passiveSummary:{count:passive.length,byAction,note:'Raw episodes retained. Unchanged successful idle/look summarized; this does not prove no new visual information. Only explicitly supplied episode IDs may support guidance.'}});
  }
- private validate(g:any,ids:Set<string>,historical=false){
-  const range=(x:any)=>Array.isArray(x)&&x.length===2&&x.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)&&x[0]<=x[1];
-  if(g?.scope?.food!==undefined&&!range(g.scope.food)||g?.scope?.hasFood!==undefined&&typeof g.scope.hasFood!=='boolean'||g?.scope?.inventory!==undefined&&(!Array.isArray(g.scope.inventory)||g.scope.inventory.length>6||g.scope.inventory.some((t:any)=>!t||!/^[a-z0-9_]+$/.test(t.item)||!Number.isInteger(t.min)||t.min<0||t.min>2304)))throw Error('Invalid guideline situational scope');
-  if(g?.scope&&(!Array.isArray(g.scope.health)||g.scope.health.length!==2||!g.scope.health.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)||g.scope.health[0]>g.scope.health[1]))throw Error('Invalid guideline scope.health: exactly [minimum,maximum] in 0..20; use [0,20] for any health, never []');
-  if(g&&typeof g.text==='string'&&g.text.length>600)throw Error('Invalid guideline text: max 600 characters');
-  if(g&&typeof g.uncertainty==='string'&&g.uncertainty.length>300)throw Error('Invalid guideline uncertainty: max 300 characters');
-  if(g&&Array.isArray(g.support)&&g.support.length>8)throw Error('Invalid guideline support: max 8 episode IDs');
-  if(g&&Array.isArray(g.counterexamples)&&g.counterexamples.length>8)throw Error('Invalid guideline counterexamples: max 8 episode IDs; preserve prior counterexamples');
-  if(Array.isArray(g?.support)&&Array.isArray(g?.counterexamples)&&[...g.support,...g.counterexamples].some(x=>!ids.has(x)))throw Error('Invalid guideline evidence: copy only exact episode IDs supplied in this reflection; no invented or altered IDs');
-  if(Array.isArray(g?.support)&&Array.isArray(g?.counterexamples)&&g.support.some((x:string)=>g.counterexamples.includes(x)))throw Error('Invalid guideline evidence: support and counterexamples must not overlap');
-  const list=(x:any,max:number)=>Array.isArray(x)&&x.length<=max&&x.every((v:any)=>typeof v==='string'&&v.length>0&&v.length<=100);
-  if(!g||typeof g.id!=='string'||!/^[a-zA-Z0-9_-]{1,60}$/.test(g.id)||!['active','retired'].includes(g.status)||typeof g.text!=='string'||!g.text.trim()||g.text.length>600||typeof g.uncertainty!=='string'||!g.uncertainty.trim()||g.uncertainty.length>300||!g.scope||!(actions.includes(g.scope.action)||historical&&['gather','dig_block','inspect_chest'].includes(g.scope.action))||!list(g.scope.species,6)||!list(g.scope.equipment,6)||!Array.isArray(g.scope.health)||g.scope.health.length!==2||!g.scope.health.every((n:any)=>Number.isFinite(n)&&n>=0&&n<=20)||g.scope.health[0]>g.scope.health[1]||!list(g.support,8)||!g.support.length||!list(g.counterexamples,8)||[...g.support,...g.counterexamples].some(x=>!ids.has(x))||g.support.some((x:string)=>g.counterexamples.includes(x)))throw Error('Invalid or unsupported guideline');
- }
- apply(input:Reflection,updates:unknown,model='unspecified'){
-  if(!Array.isArray(updates)||updates.length>32)throw Error('Invalid guideline updates');
-  const ids=new Set(input.episodes.map(e=>e.id));for(const g of updates){
-   this.validate(g,ids);
-   // Old persisted drafts can be retired verbatim; active revisions must be concise.
-   if(g.status==='active'&&(g.text.length>240||g.uncertainty.length>160))throw Error('Invalid guideline: one concise sentence max240 chars and uncertainty max160 chars');
-   if(g.revisionReason!==undefined&&(typeof g.revisionReason!=='string'||!g.revisionReason.trim()||g.revisionReason.length>240))throw Error('Invalid guideline revision reason');
-   if(g.supersedes!==undefined&&(!Array.isArray(g.supersedes)||!g.supersedes.length||new Set(g.supersedes).size!==g.supersedes.length||g.supersedes.includes(g.id)||g.status!=='active'||typeof g.revisionReason!=='string'||!g.revisionReason.trim()||g.revisionReason.length>240))throw Error('Invalid guideline merge: supersedes must be nonempty other guide IDs, never this draft ID; active status and revisionReason required; omit supersedes when not merging');
-  }
-  const merged=updates.flatMap(g=>g.supersedes??[]);
-  if(new Set(merged).size!==merged.length||merged.some(id=>updates.some(g=>g.id===id)))throw Error('Invalid overlapping guideline merge');
-  if(new Set(updates.map(g=>g.id)).size!==updates.length)throw Error('Duplicate guideline update');
+ apply(input:Reflection,rawUpdates:unknown,model='unspecified'){
+  const updates=validateReflectionUpdates(input,rawUpdates);
   this.change(d=>{
    if(d.revision!==input.revision||input.through<d.reviewed||input.through>d.episodes.length)throw Error('Stale memory reflection');
    const known=new Set(input.guides.map(g=>g.id));

@@ -30,8 +30,8 @@ test('actual JEV receives all selected places but not raw annotation evidence',a
 test('medium LLM receives place evidence and returns annotation patches without mandatory places',async()=>{
  const {s,ev}=evidence();s.placeEvidence=ev;s.importantPlaces=[];
  const b=new ApiBrain({...config(),targetPolicy:'observed',mode:'jev',jevKey:'test',llmKey:'test'},new Budget(1,1),(async(_url:any,init:any)=>{
-  const body=JSON.parse(init.body);assert.match(body.messages[0].content,/You decide importance/);const input=JSON.parse(body.messages.at(-1).content);assert.equal(input.memory.placeEvidence.length,20);assert.match(input.actionCapabilities.move,/bounded path attempt/);assert.match(input.actionCapabilities.mine,/approaches/);assert.match(input.actionCapabilities.navigationHints,/empty list does not establish/);assert.deepEqual(input.placeCitationContract.allowedEvidenceIds,ev.map(e=>e.id));
-  return Response.json({choices:[{message:{content:JSON.stringify({goal:'Explore',intent:{description:'Learn surroundings',desiredInventory:[],constraints:[]},proposals:[],placeUpdates:[{evidenceId:ev[0].id,label:'Meeting point',reason:'Useful for cooperation'}]})}}],usage:{prompt_tokens:1,completion_tokens:1}});
+  const body=JSON.parse(init.body);assert.match(body.messages[0].content,/You decide importance/);const input=JSON.parse(body.messages.at(-1).content);assert.equal(input.memory.placeEvidence.length,20);assert.match(input.actionCapabilities.move,/bounded path attempt/);assert.match(input.actionCapabilities.mine,/approaches/);assert.match(input.actionCapabilities.navigationHints,/empty list does not establish/);assert.deepEqual(input.placeCitationContract.allowedEvidenceIds,ev.map((_,i)=>"E"+(i+1)));
+  return Response.json({choices:[{message:{content:JSON.stringify({goal:'Explore',intent:{description:'Learn surroundings',desiredInventory:[],constraints:[]},proposals:[],placeUpdates:[{evidenceId:input.memory.placeEvidence[0].id,label:'Meeting point',reason:'Useful for cooperation'}]})}}],usage:{prompt_tokens:1,completion_tokens:1}});
  }) as typeof fetch);
  const p=await b.plan(s,[],new AbortController().signal,null,{longTermGoal:'Explore'} as any);assert.equal(p.placeUpdates?.[0].evidenceId,ev[0].id);
 });
@@ -90,7 +90,7 @@ test('long planner receives memory receipts as evidence of bookkeeping, not a fa
  const b=new ApiBrain({...config(),targetPolicy:'observed',mode:'jev',llmKey:'test'},new Budget(1,1),(async(_url:any,init:any)=>{
   const body=JSON.parse(init.body),input=JSON.parse(body.messages.at(-1).content);
   assert.deepEqual(input.placeMemoryReview,review);assert.match(body.messages[0].content,/does not prove a safe route/);
-  return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[],activeGoalId:null})}}],usage:{prompt_tokens:1,completion_tokens:1}});
+  return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[],activeGoalId:'existing_goal',userRequestStatus:{status:'in_progress',reason:'Test fixture'}})}}],usage:{prompt_tokens:1,completion_tokens:1}});
  }) as typeof fetch);
  await b.reviewGoals(s,{placeMemoryReview:review,recentActions:[],goalReview:{observationId:'obs',evidence:[]},olderSummary:{},longTermGoal:'Explore'} as any,new AbortController().signal);
 });

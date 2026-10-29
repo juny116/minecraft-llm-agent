@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {combat, type CombatPort, type Enemy} from '../src/combat.js';
+import {combat, COMBAT_BUDGET_MS, type CombatPort, type Enemy} from '../src/combat.js';
 import {candidates} from '../src/types.js';
 import {MockWorld} from '../src/mock.js';
 import {ApiBrain,Budget} from '../src/providers.js';
@@ -14,8 +14,16 @@ function fixture(){
 }
 test('attacks use local cooldown, terminate after a bounded interval, and do not claim kills',async()=>{
  const f=fixture();const r=await combat(f.port,'attack',new AbortController().signal);
- assert.equal(r.attacksSent,4);assert.equal(r.outcome,'time_limit');
- assert.deepEqual(f.strikes,[700,1400,2100,2800]);assert.ok(f.stops()>0);
+ assert.equal(r.attacksSent,Math.floor((COMBAT_BUDGET_MS-1)/700));assert.equal(r.outcome,'time_limit');
+ assert.deepEqual(f.strikes,Array.from({length:Math.floor((COMBAT_BUDGET_MS-1)/700)},(_,i)=>700*(i+1)));assert.ok(f.stops()>0);
+});
+test('between swings a close target is backed away from, and an unsafe backstep stands still instead',async()=>{
+ for(const safe of [true,false]){
+  const f=fixture();let steps=0;f.port.backstep=(e,others)=>{assert.equal(e.id,1);assert.deepEqual(others,[]);steps++;return safe;};
+  const r=await combat(f.port,'attack',new AbortController().signal);
+  assert.equal(r.attacksSent,Math.floor((COMBAT_BUDGET_MS-1)/700));assert.ok(steps>0);
+  if(safe)assert.ok(f.stops()<steps);else assert.ok(f.stops()>steps);
+ }
 });
 test('occluded/lost target stops attacks, and no visible target rejects',async()=>{
  const f=fixture();const wait=f.port.wait;
@@ -90,4 +98,21 @@ test('runtime permits bounded attack reacquisition but explicit goals still canc
  const pending=r.tick();await new Promise(resolve=>setTimeout(resolve,0));
  world.state.enemies=[];world.state.health=5;await r.tick();assert.equal(signal?.aborted,false);
  r.setGoal('stop this task');assert.equal(signal?.aborted,true);release();await pending;r.close();
+});
+test('flee keeps retreating until the threat is far, retargeting meanwhile; best weapon ranks swords by tier',async()=>{
+ const {FLEE_SAFE_DISTANCE,weaponRank}=await import('../src/combat.js');
+ const f=fixture();let retreats=0;f.port.retreat=()=>{retreats++;return true;};const wait=f.port.wait;
+ f.port.wait=async(ms,s)=>{await wait(ms,s);f.state.position.z+=.5;};
+ const r=await combat(f.port,'flee',new AbortController().signal);
+ assert.equal(r.outcome,'distance_increased');assert.ok(f.state.position.z>=FLEE_SAFE_DISTANCE-2,'a 2-block gain is no longer enough');assert.ok(retreats>1);
+ assert.ok(weaponRank('iron_sword')>weaponRank('stone_sword')&&weaponRank('wooden_sword')>weaponRank('iron_axe')&&weaponRank('wooden_axe')>weaponRank('bread'));
+});
+test('flee continues while any other visible hostile is near and retreats away from all of them',async()=>{
+ const f=fixture();const calls:any[]=[];const other={id:9,kind:'zombie',position:{x:0,y:0,z:6},distance:6};
+ f.state.enemies=[...f.state.enemies,other];
+ f.port.retreat=(from,others=[])=>{calls.push(others.length);return true;};const wait=f.port.wait;
+ // The bot outruns the target but a second zombie keeps pace; flee must not end while it is within the safe distance.
+ f.port.wait=async(ms,s)=>{await wait(ms,s);f.state.position={...f.state.position,z:f.state.position.z+.5};other.distance=6;};
+ const r=await combat(f.port,'flee',new AbortController().signal);
+ assert.equal(r.outcome,'time_limit');assert.ok(calls.length>1&&calls.every(n=>n===1),'every retreat includes the other hostile');
 });

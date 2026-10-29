@@ -6,7 +6,7 @@ import {SocialMemory} from '../src/social.js';import {RecoveryMemory} from '../s
 import type {SupervisorInput,Supervision} from '../src/supervision.js';
 const flush=()=>delay(0),opts={planMs:45000,actionMs:10000,minConfidence:.55,selectorMs:0,longPlanMs:180000};
 const decision=(choice:string,routes:Supervision['routes']={}):Supervision=>({choice,confidence:.9,review:'none',routes});
-function brain(supervise:NonNullable<Brain['supervise']>):Brain{return {plan:async()=>({goal:'Gather observed resources',preferred:'mine',mine:{position:{x:1,y:64,z:0},expected:'oak_log'},steps:[]}),choose:new MockBrain().choose,supervise,reviewGoals:async(_s,c)=>({goalUpdates:[{id:'self-goal',description:'Gather observed resources',reason:'Current observations support it',status:'active',successCriteria:'Useful resources acquired',evidenceIds:[c.goalReview!.observationId]}],activeGoalId:'self-goal'})};}
+function brain(supervise:NonNullable<Brain['supervise']>):Brain{return {plan:async()=>({goal:'Gather observed resources',preferred:'mine',mine:{position:{x:1,y:64,z:0},expected:'oak_log'},steps:[]}),choose:new MockBrain().choose,supervise,reviewGoals:async(_s,c)=>({goalUpdates:[{id:'self-goal',description:'Gather observed resources',reason:'Current observations support it',status:'active',successCriteria:'Useful resources acquired',evidenceIds:[c.goalReview!.observationId]}],activeGoalId:'self-goal',messageDecisions:(c.goalReview?.messagesToDecide??[]).map(m=>({messageId:m.id,decision:m.text.startsWith('Carol')?'not_for_me' as const:'no_request' as const,reason:'test routing'}))})};}
 class SlowWorld extends MockWorld{starts=0;running=0;maxRunning=0;aborts=0;override async execute(_a:any,signal:AbortSignal){this.starts++;this.running++;this.maxRunning=Math.max(this.maxRunning,this.running);try{await delay(10000,undefined,{signal});return 'done';}finally{this.running--;if(signal.aborted)this.aborts++;}}}
 
 test('continuous selector keeps same execution while long and medium reasoning are pending',async()=>{
@@ -16,7 +16,7 @@ test('continuous selector keeps same execution while long and medium reasoning a
 });
 test('switch aborts and joins old executor before starting another; action count unchanged',async()=>{
  const w=new SlowWorld();let call=0;const r=new Runtime(w,brain(async(_s,i)=>decision(++call===1?i.options.find(o=>o.action==='mine')!.id:i.options.find(o=>o.action==='look')!.id)),opts,()=>{});
- primeExecution(r);await r.tick();await r.tick();await r.tick();await r.tick();assert.equal(w.starts,2);assert.equal(w.aborts,1);assert.equal(w.maxRunning,1);assert.equal(actions.length,17);r.close();await flush();
+ primeExecution(r);await r.tick();await r.tick();await r.tick();await r.tick();assert.equal(w.starts,2);assert.equal(w.aborts,1);assert.equal(w.maxRunning,1);assert.equal(actions.length,18);r.close();await flush();
 });
 test('pending supervisor is never duplicated and stale threat response cannot switch',async()=>{
  const w=new SlowWorld();let finish!:(d:Supervision)=>void,calls=0;const b=brain(async()=>{calls++;return await new Promise<Supervision>(resolve=>finish=resolve);});const r=new Runtime(w,b,opts,()=>{});
@@ -63,7 +63,7 @@ test('alias metadata alone never bypasses semantic routing or marks a message an
 });
 test('long review and medium planning API inputs are separate contracts',async()=>{
  const w=new MockWorld(),g=new GoalBook();const context:any={goalState:g.snapshot(),goalReview:g.review(w.snapshot(),null),longTermGoal:null,mediumTerm:{summary:'review',steps:[],activeStep:0},recentActions:[],olderSummary:{count:0,byAction:{},inventoryNet:{},healthNet:0},replanReasons:[],failureStreak:0};let scope='long';
- const b=new ApiBrain({...config(),targetPolicy:'planner',mode:'jev',llmKey:'test'},new Budget(3,1),(async(_u:any,init:any)=>{const request=JSON.parse(init.body),data=JSON.parse(request.messages[1].content);if(scope==='long'){assert.match(request.messages[0].content,/NOT immediate actions/);assert.ok(data.goalReview);return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[],activeGoalId:null})}}],usage:{prompt_tokens:10,completion_tokens:10}});}assert.match(data.planningScope,/medium_only/);assert.equal(data.planning.goalReview,undefined);return Response.json({choices:[{message:{content:JSON.stringify({goal:'Observe',preferred:'idle',steps:[]})}}],usage:{prompt_tokens:10,completion_tokens:10}});}) as typeof fetch);
+ const b=new ApiBrain({...config(),targetPolicy:'planner',mode:'jev',llmKey:'test'},new Budget(3,1),(async(_u:any,init:any)=>{const request=JSON.parse(init.body),data=JSON.parse(request.messages[1].content);if(scope==='long'){assert.match(request.messages[0].content,/NOT immediate actions/);assert.ok(data.goalReview);return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[],activeGoalId:'existing_goal',userRequestStatus:{status:'in_progress',reason:'Test fixture'}})}}],usage:{prompt_tokens:10,completion_tokens:10}});}assert.match(data.planningScope,/medium_only/);assert.equal(data.planning.goalReview,undefined);return Response.json({choices:[{message:{content:JSON.stringify({goal:'Observe',preferred:'idle',steps:[]})}}],usage:{prompt_tokens:10,completion_tokens:10}});}) as typeof fetch);
  await b.reviewGoals(w.snapshot(),context,new AbortController().signal);scope='medium';delete context.goalReview;await b.plan(w.snapshot(),[],new AbortController().signal,null,context);
 });
 
@@ -113,7 +113,15 @@ test('binary continuity preserves work even when another option scores well, and
 test('recent heard partner permits proactive dialogue outside current camera view',async()=>{
  const w=new MockWorld(),social=new SocialMemory('Alice'),now=Date.now();w.state.nearbyPlayers=[];w.state.chatEvents=[{id:'recent',speaker:'Bob',text:'주변에서 재료를 찾고 있어.',at:now}];let calls=0;
  const b=brain(async()=>decision('wait'));b.communicate=async()=>{calls++;return null;};const rt=new Runtime(w,b,{...opts,social},()=>{});
- await rt.tick(now);await flush();assert.equal(calls,1);rt.close();
+ await rt.tick(now);await flush();assert.equal(calls,0,'dialogue waits for goal-layer routing');await rt.tick(now+1);await flush();assert.equal(calls,1);rt.close();
+});
+
+test('an online partner out of sight and silent for over five minutes still gets periodic dialogue; nobody online gets none',async()=>{
+ for(const online of [['Bob'],[]]){
+  const w=new MockWorld(),social=new SocialMemory('Alice'),now=Date.now();w.state.nearbyPlayers=[];w.state.onlinePlayers=online;let calls=0;
+  const b=brain(async()=>decision('wait'));b.communicate=async()=>{calls++;return null;};const rt=new Runtime(w,b,{...opts,social},()=>{});
+  await rt.tick(now);await flush();assert.equal(calls,online.length?1:0);rt.close();
+ }
 });
 
 test('transient preference switches do not cancel useful work while danger bypasses confirmation',async()=>{

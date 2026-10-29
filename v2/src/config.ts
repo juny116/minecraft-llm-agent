@@ -21,9 +21,13 @@ export function config() {
   const lookBinding=process.env.JEV_LOOK_BINDING??'sequential';
   if(!['sequential','parallel-branches','relative-branches'].includes(lookBinding))throw Error('Invalid JEV_LOOK_BINDING');
   if(lookBinding!=='sequential'&&(withdrawalMode!=='direct'||argumentContract!=='coordinated'))throw Error('Parallel look binding requires coordinated/direct selection');
+  const workflowMode=process.env.WORKFLOW_MODE??'direct';
+  if(!['direct','procedural'].includes(workflowMode))throw Error('Invalid WORKFLOW_MODE');
+  if(workflowMode==='procedural'&&(process.env.TARGET_POLICY==='planner'||mode!=='jev'))throw Error('Procedural workflow requires TARGET_POLICY=observed and DECISION_MODE=jev');
   const auth = process.env.MC_AUTH ?? 'offline';
   if (!['offline', 'microsoft'].includes(auth)) throw new Error('Invalid MC_AUTH');
   return {
+    workflowMode:workflowMode as 'direct'|'procedural',
     argumentBinding:argumentBinding as 'sequential'|'independent',
     lookBinding:lookBinding as 'sequential'|'parallel-branches'|'relative-branches',
     withdrawalMode:withdrawalMode as 'direct'|'joint'|'separate'|'proposal',
@@ -39,10 +43,15 @@ export function config() {
     planMs: number('PLAN_INTERVAL_MS', 45000, 1000), actionMs: number('ACTION_TIMEOUT_MS', 20000, 100),
     apiMs: number('API_TIMEOUT_MS', 120000, 100), maxCalls: number('MAX_API_CALLS', 500, 1),
     maxUsd: number('MAX_ESTIMATED_USD', 2, 0.001),
+    // LLM_PROVIDER=anthropic sends the LLM layers to the Claude Messages API (official SDK) with ANTHROPIC_API_KEY
+    // (or CLAUDE_API_KEY).
+    llmProvider:(process.env.LLM_PROVIDER==='anthropic'?'anthropic':'openai') as 'openai'|'anthropic',
     llmUrl: process.env.LLM_BASE_URL ?? 'https://api.openai.com/v1',
-    llmModel: process.env.LLM_MODEL ?? 'gpt-6-luna', llmKey: process.env.LLM_API_KEY ?? '',
+    // Provider-specific so an OpenAI LLM_MODEL in .env never reaches the Claude API.
+    llmModel: process.env.LLM_PROVIDER==='anthropic'?process.env.CLAUDE_MODEL??'claude-haiku-5-5':process.env.LLM_MODEL??'gpt-6-luna',
+    llmKey: (process.env.LLM_PROVIDER==='anthropic'?process.env.ANTHROPIC_API_KEY??process.env.CLAUDE_API_KEY:process.env.LLM_API_KEY) ?? '',
     // Conservative peak, uncached estimates. Update when changing providers/models.
-    inputRate: number('LLM_INPUT_USD_PER_MTOK', 0.10), outputRate: number('LLM_OUTPUT_USD_PER_MTOK', 0.50),
+    inputRate: process.env.LLM_PROVIDER==='anthropic'?number('CLAUDE_INPUT_USD_PER_MTOK',0.10):number('LLM_INPUT_USD_PER_MTOK', 0.10), outputRate: process.env.LLM_PROVIDER==='anthropic'?number('CLAUDE_OUTPUT_USD_PER_MTOK',0.50):number('LLM_OUTPUT_USD_PER_MTOK', 0.50),
     maxOutput: number('LLM_MAX_OUTPUT_TOKENS', 512, 32),
     jevUrl: process.env.JEV_BASE_URL ?? 'https://api.typesafe.ai/v1',
     jevModel: process.env.JEV_MODEL ?? 'jev-1.14.0', jevKey: process.env.JEV_API_KEY ?? '',

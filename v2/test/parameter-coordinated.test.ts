@@ -1,3 +1,4 @@
+import {emptyActions} from '../src/action-domains.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {parameterSupervise,cameraArgumentEffect,type Ask} from '../src/parameter-supervisor.js';
@@ -20,13 +21,13 @@ function answers(action:string,review='none',argument='revise'):Ask{
  return async(q,c)=>Object.fromEntries(Object.keys(q).map(k=>[k,{type:'choice',choice:c.argumentName?(argument==='value_0'&&!q[k].criteria.value_0?'group_0':argument):k==='action'?action:review,confidence:.01}]));
 }
 
-test('coordinated separates planning from action while retaining every non-idle game action',async()=>{
- let menu:string[]=[];
- const d=await parameterSupervise(fixture(),input,async(q,c)=>{
+test('coordinated separates planning from action and offers every non-idle action that has targets',async()=>{
+ let menu:string[]=[];const s=fixture();s.craftable=['oak_slab'];
+ const d=await parameterSupervise(s,input,async(q,c)=>{
   if(!c.argumentName){menu=Object.keys(q.action.criteria);assert.ok(q.review);assert.match(q.action.instructions,/does not suspend action selection/);}
   return answers('look','medium','value_0')(q,c);
  },'coordinated');
- assert.deepEqual(menu,actions.filter(a=>a!=='idle'));
+ assert.deepEqual(menu,actions.filter(a=>a!=='idle'&&!emptyActions(s).includes(a)));
  assert.equal(d.selected?.action,'look');assert.equal(d.selected?.plan.waitMs,undefined);
  assert.equal(d.review,'medium');assert.deepEqual(d.selectionControl,{action:'look',review:'medium'});
 });
@@ -52,8 +53,7 @@ test('argument withdrawal preserves independent review choice including no revie
 test('removed wait is rejected and empty argument domains do not synthesize planning requests',async()=>{
  await assert.rejects(parameterSupervise(fixture(),input,answers('wait'),'coordinated'),/Invalid parameter selection/);
  const s=fixture();s.placeableItems=[];
- const empty=await parameterSupervise(s,input,answers('place_block'),'coordinated');
- assert.equal(empty.choice,'unresolved');assert.equal(empty.review,'none');assert.equal(empty.selectionControl?.argumentOutcome,'empty_domain');
+ await assert.rejects(parameterSupervise(s,input,answers('place_block'),'coordinated'),/Invalid parameter selection/,'an empty-domain action is not offered');
 });
 
 test('legacy and explicit preserve their previous reconsider contract for comparisons',async()=>{
@@ -141,4 +141,16 @@ test('coordinated camera choice exposes same-direction consequence without exclu
  assert.match(pitch.q.pitchDegrees.criteria.value_90,/delta=0deg; keeps this axis/);
  assert.ok(pitch.q.pitchDegrees.criteria.revise);
  assert.match(pitch.c.argumentSemantics.changeMeaning,/not a recommendation/);
+});
+
+test('craft is not offered when nothing is craftable, and returns when an output becomes craftable',async()=>{
+ const menu=async(craftable:string[])=>{let m:string[]=[];const s=fixture();s.craftable=craftable;await parameterSupervise(s,input,async(q,c)=>{if(!c.argumentName)m=Object.keys(q.action.criteria);return answers('look','none','value_0')(q,c);},'coordinated');return m;};
+ assert.ok(!(await menu([])).includes('craft'));assert.ok((await menu(['stick'])).includes('craft'));
+});
+
+test('a suppressed action is not offered unless it is the running execution',async()=>{
+ const s=fixture();s.stuck={excludedTargets:[],suppressedActions:[{action:'place_block',until:9e15,reason:'r',secondsLeft:90}],meaning:''} as any;
+ let menu:string[]=[];
+ await parameterSupervise(s,input,async(q,c)=>{if(!c.argumentName)menu=Object.keys(q.action.criteria);return answers('look','none','value_0')(q,c);},'coordinated');
+ assert.ok(!menu.includes('place_block'));assert.ok(menu.includes('mine'));
 });

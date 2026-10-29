@@ -6,7 +6,7 @@ export function navigationEvidence(reason:string,position:Position,target:Positi
  return {reason,position:{...position},target:{...target},arrivalRadius:radius,heightDifference:target.y-position.y,
   search:{status:path?.status??'unknown',budgetMs:200,nodeCount:path?.path?.length??0,endpoint:path?.path?.at(-1)?{x:path.path.at(-1).x,y:path.path.at(-1).y,z:path.path.at(-1).z}:null,localScanPerformed:scan},
   nearbyObservedBlocks:near.map(b=>({name:b.name,position:{...b.position},lastSeen:b.lastSeen})),
-  limits:{observedSupportsOnly:true,automaticDigging:false,automaticPlacement:false,parkour:false},
+  limits:{observedSupportsOnly:true,automaticDigging:false,automaticPlacement:false,parkour:false,maxDropDown:4,stepUpBlocks:1},
   interpretation:'A failed bounded route attempt, not proof the destination is permanently unreachable. Height difference alone does not identify the cause. Unobserved clearance is unknown; nearby blocks are observations, not a certified blocking set.'};
 }
 export type NavigationEvidence=ReturnType<typeof navigationEvidence>;

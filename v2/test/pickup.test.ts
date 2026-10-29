@@ -26,3 +26,20 @@ test('observed target-item gain counts as acquisition despite a final approach f
  assert.equal(classify('pickup',JSON.stringify({...r,inventoryGained:[{name:'dirt',count:1}]})),'failed');
  assert.equal(classify('pickup',JSON.stringify({...r,status:'cancelled'})),'cancelled');
 });
+test('temporary occlusion keeps frozen last-seen destination, inventory confirms pickup',async()=>{
+ const f=setup();f.w.navigate=async(goal:any)=>{f.hide();Object.defineProperty(f.bot.entities[42],'position',{get(){throw Error('Hidden position read');}});await new Promise(r=>setTimeout(r,100));assert.equal(goal.x,2);f.gain('cobblestone');};
+ const r=JSON.parse(await f.w.execute('pickup',signal(),plan));assert.equal(r.status,'finished');
+});
+
+test('occluded remembered target reapproaches frozen position without reading hidden coordinates',async()=>{
+ const f=setup();f.w.visibleItems();f.hide();Object.defineProperty(f.bot.entities[42],'position',{get(){throw Error('Hidden position leaked');}});
+ f.w.navigate=async(goal:any)=>{assert.equal(goal.x,2);f.gain('cobblestone');};
+ const r=JSON.parse(await f.w.execute('pickup',signal(),{...plan,modelSelected:true}));assert.equal(r.status,'finished');assert.equal(r.inventoryGained[0].count,1);
+});
+test('last-seen memory expires, does not follow hidden motion, and current observations replace it',async()=>{
+ const {DropMemory,pickupTargets}=await import('../src/pickup.js');const m=new DropMemory(),drop={id:42,name:'oak_log',count:1,position:{x:2,y:0,z:0}};
+ m.observe([drop],100);drop.position.x=99;
+ const old=m.remembered([],101);assert.equal(old[0].position.x,2);assert.equal(old[0].currentExistence,'unknown');
+ assert.equal(pickupTargets({rememberedItems:old},120101).length,0);assert.equal(m.remembered([],120101).length,0);
+ m.observe([drop],120102);assert.equal(m.remembered([drop],120103).length,0);
+});

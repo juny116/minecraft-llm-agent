@@ -33,4 +33,15 @@ export class RecoveryMemory{
  }
  outcomeVersion(){this.reload();const d=this.records.at(-1);return JSON.stringify([d?.id,d?.outcome?.version??0]);}
  context(){this.reload();return structuredClone({deaths:this.records.slice(-5),warning:'Historical death observations only. Possessions may be the last alive observation, at possessionsObservedAt, not proof of actual dropped items; death-event inventories can already be cleared by server packet order. Cause, present danger, item survival and item location remain unknown until re-observed. Recovery must be judged from current gear, distance, observed terrain and experience; no forced retrieval. Inventory gain is not proof of drop origin. Outcome supplies_restored means the recorded supply deficit was covered, not exact item provenance or full durability/NBT equivalence. Completion is historical and survives later use of supplies. Superseded decisions are historical, not current advice. Reconsider paused recovery goals against fresh outcome evidence; do not automatically complete broader survival goals.'});}
+ // What the planners read. outcomeHistory re-recorded every outcome change (~9K characters per death in CONT3);
+ // the last 3 deaths keep detail without that history, older ones keep id, place and status.
+ view():ReturnType<RecoveryMemory['context']>{const c=this.context();return {...c,deaths:c.deaths.map((d,i)=>i>=c.deaths.length-3?slimDeath(d):summarizeDeath(d))};}
+}
+
+function slimDeath(d:any){const {outcomeHistory,decisionHistory,incomingDamage,...rest}=d;
+ return {...rest,...(decisionHistory?.length?{decisionHistory:decisionHistory.slice(-3)}:{}),...(Array.isArray(incomingDamage)&&incomingDamage.length?{incomingDamage:incomingDamage.slice(-3)}:{})};
+}
+function summarizeDeath(d:any){
+ return {id:d.id,at:d.at,dimension:d.dimension,position:d.position,itemsAtDeath:(d.inventory??[]).length,
+  ...(d.decision?{decision:{strategy:d.decision.strategy,at:d.decision.at}}:{}),...(d.outcome?{outcome:{status:d.outcome.status,at:d.outcome.at}}:{}),summarized:true};
 }

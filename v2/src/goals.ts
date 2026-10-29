@@ -4,22 +4,31 @@ import {randomUUID} from 'node:crypto';
 import {compact,type ActionRecord} from './planning.js';
 import type {Snapshot} from './types.js';
 
-export const GAME_CONTEXT={version:1,description:'You live in a Minecraft survival world with other players. Manage health and food while gathering, crafting, building or exploring. Choose activities from current conditions and experience. Share information and cooperate when useful, without having to accept every proposal. Avoid needless danger while improving living conditions and learning about the world. No mandatory house, village, profession or fixed progression is assigned.'} as const;
+export const GAME_CONTEXT={version:1,description:'You live in a Minecraft survival world with other players. Manage health and food while gathering, crafting, building or exploring. Choose activities from current conditions and experience. Share information and cooperate when useful, without having to accept every proposal. Avoid needless danger while improving living conditions and learning about the world. No mandatory house, village, profession or fixed progression is assigned.',
+ mechanics:['A day lasts 20 minutes. Night brings darkness in which hostile mobs spawn on the surface; zombies and skeletons burn in daylight.','Sleeping in a bed at night or during a thunderstorm skips to morning once every online player is asleep. A bed needs free space above it and cannot be used while hostile monsters are close. Using a bed sets your respawn point to it.','On death you drop carried items and worn armor at the death site and respawn at your respawn point (the world spawn if none is set); dropped items disappear after about 5 minutes.','Tools improve in tiers. Logs make planks, planks make sticks and a crafting table; wooden tools come from planks and sticks. A wooden pickaxe mines stone into cobblestone, which makes stone tools and a furnace; coal ore gives coal for torches. Iron ore needs a stone pickaxe and smelting in a furnace before iron tools and armor.','A bed is crafted from three wool of one color and three planks; wool comes from sheep. Hostile mobs cannot pass solid blocks, so an enclosed space with a door keeps them out, and light from torches stops them spawning nearby.']} as const;
+// Always-present basics for every LLM layer: the world and who this bot is. persona is reserved for later.
+export function gameContext(s:{selfName?:string;social?:{self?:string}},persona?:string){
+ const name=s.selfName??s.social?.self;
+ return {...GAME_CONTEXT,...(name?{self:{name,meaning:'Your own player name in this world. Messages that name you or speak to you are addressed to you.'}}:{}),...(persona?{persona}:{})};
+}
 export type GoalStatus='active'|'paused'|'completed'|'abandoned';
 export type GoalDraft={id:string;description:string;reason:string;evidenceIds:string[];status:GoalStatus;successCriteria:string;pauseReason?:string};
 export type Goal=GoalDraft&{version:number;createdAt:number;updatedAt:number};
 export type GoalEvidence={id:string;kind:'observation'|'action'|'operator'|'social';at:number;data:unknown};
-export type GoalReview={revision:number;needsReview:boolean;observationId:string;goals:Goal[];evidence:GoalEvidence[]};
+export type ReviewTrigger='startup'|'operator_request_changed'|'disconnected'|'reconnect'|'death'|'respawn_after_death'|'stalled';
+// Why the current intention must be rechecked. The goal itself stays visible as provisional.
+export type ReviewState={trigger:ReviewTrigger;reason:string;since:number};
+export type GoalReview={revision:number;needsReview:boolean;reviewState?:ReviewState;reviewFacts?:unknown;messagesToDecide?:{id:string;speaker:string;text:string;at:number}[];self?:string;observationId:string;goals:Goal[];evidence:GoalEvidence[]};
 type Data={schema:1;profile:string;revision:number;goals:Goal[];evidence:GoalEvidence[];revisions:Goal[]};
 const text=(v:unknown,max:number)=>typeof v==='string'&&v.trim().length>0&&v.length<=max;
 // Normalize only an absent optional pause reason; paused goals still require one.
 export function normalizeGoalUpdates(raw:unknown):unknown{return Array.isArray(raw)?raw.map(g=>g&&typeof g==='object'&&g.status!=='paused'&&g.pauseReason===null?Object.fromEntries(Object.entries(g).filter(([k])=>k!=='pauseReason')):g):raw;}
 export function validateGoalUpdates(raw:unknown):asserts raw is GoalDraft[]{
  if(!Array.isArray(raw)||raw.length>8)throw Error('Invalid goal updates');const ids=new Set();
- for(const g of raw){if(!g||!text(g.id,60)||!/^[a-zA-Z0-9_-]+$/.test(g.id))throw Error('Invalid goal id: use 1-60 letters, digits, underscore or hyphen; no colon');if(!g||!text(g.id,60)||!/^[a-zA-Z0-9_-]+$/.test(g.id)||ids.has(g.id)||!text(g.description,400)||!text(g.reason,500)||!text(g.successCriteria,400)||!['active','paused','completed','abandoned'].includes(g.status)||!Array.isArray(g.evidenceIds)||g.evidenceIds.length<1||g.evidenceIds.length>8||!g.evidenceIds.every((x:unknown)=>text(x,100))||(g.status==='paused'&&!text(g.pauseReason,400))||(g.pauseReason!==undefined&&!text(g.pauseReason,400)))throw Error('Invalid goal update');ids.add(g.id);}
+ for(const g of raw){for(const [field,max] of [['description',400],['reason',500],['successCriteria',400],['pauseReason',400]] as const){if(typeof g?.[field]==='string'&&g[field].length>max)throw Error(`Invalid goal update: ${field} length ${g[field].length} exceeds ${max}; shorten this field without changing its criteria`);}if(!g||!text(g.id,60)||!/^[a-zA-Z0-9_-]+$/.test(g.id))throw Error('Invalid goal id: use 1-60 letters, digits, underscore or hyphen; no colon');if(!g||!text(g.id,60)||!/^[a-zA-Z0-9_-]+$/.test(g.id)||ids.has(g.id)||!text(g.description,400)||!text(g.reason,500)||!text(g.successCriteria,400)||!['active','paused','completed','abandoned'].includes(g.status)||!Array.isArray(g.evidenceIds)||g.evidenceIds.length<1||g.evidenceIds.length>8||!g.evidenceIds.every((x:unknown)=>text(x,100))||(g.status==='paused'&&!text(g.pauseReason,400))||(g.pauseReason!==undefined&&!text(g.pauseReason,400)))throw Error('Invalid goal update');ids.add(g.id);}
 }
 export class GoalBook{
- private data:Data;private pending:GoalEvidence[]=[];needsReview=true;
+ private data:Data;private pending:GoalEvidence[]=[];needsReview=true;reviewState:ReviewState={trigger:'startup',reason:'Process start: restored or missing intentions have not been checked against current observations',since:Date.now()};
  constructor(private file?:string,private profile='ephemeral'){
   this.data=this.read();
  }
@@ -37,7 +46,9 @@ export class GoalBook{
   mkdirSync(dirname(this.file),{recursive:true,mode:0o700});const lock=this.file+'.lock',fd=openSync(lock,'wx',0o600);
   try{if(this.read().revision!==this.data.revision)throw Error('Invalid stale goal revision');const tmp=this.file+'.'+randomUUID()+'.tmp';writeFileSync(tmp,JSON.stringify(next),{mode:0o600});renameSync(tmp,this.file);this.data=next;}finally{closeSync(fd);unlinkSync(lock);}
  }
- snapshot(){return {revision:this.data.revision,needsReview:this.needsReview,goals:structuredClone(this.data.goals),activeGoal:this.needsReview?null:structuredClone(this.data.goals.find(g=>g.status==='active')??null)};}
+ snapshot(){return {revision:this.data.revision,needsReview:this.needsReview,...(this.needsReview?{reviewState:structuredClone(this.reviewState)}:{}),goals:structuredClone(this.data.goals),activeGoal:this.needsReview?null:structuredClone(this.data.goals.find(g=>g.status==='active')??null),provisionalGoal:this.needsReview?structuredClone(this.data.goals.find(g=>g.status==='active')??null):null};}
+ // Require review without pausing: the current intention stays as provisional context.
+ requireReview(trigger:ReviewTrigger,reason:string){this.needsReview=true;this.reviewState={trigger,reason,since:Date.now()};}
  private evidence(kind:GoalEvidence['kind'],data:unknown){const e={id:randomUUID(),kind,at:Date.now(),data:structuredClone(data)};this.pending.push(e);this.pending=this.pending.slice(-64);return e;}
  record(action:ActionRecord){this.evidence('action',{decision:action.decision,outcome:action.outcome,result:action.result,before:action.before,after:action.after,changes:action.changes});}
  pause(reason:string){
@@ -52,11 +63,11 @@ export class GoalBook{
   const referenced=new Set(this.data.goals.flatMap(g=>g.evidenceIds));
   // Register only received/self-authored messages supplied by durable social memory.
   // Their IDs now have explicit provenance; arbitrary chat claims remain unverified.
-  const social:GoalEvidence[]=(s.social?.evidenceMessages??s.social?.heard??[]).map(e=>({id:e.id,kind:'social',at:e.at,data:{source:e.speaker===s.social?.self?'self_statement':'heard_unverified',message:{id:e.id,speaker:e.speaker,text:e.text,at:e.at}}}));
+  const social:GoalEvidence[]=[...(s.social?.keptAdvice??[]),...(s.social?.evidenceMessages??[]),...(s.social?.heard??[])].map(e=>({id:e.id,kind:'social',at:e.at,data:{source:e.speaker===s.social?.self?'self_statement':'heard_unverified',message:{id:e.id,speaker:e.speaker,text:e.text,at:e.at}}}));
   const socialIds=new Set(social.map(e=>e.id));
   const registered=new Set([...this.data.evidence,...this.pending].map(e=>e.id));
   const all=new Map([...social.filter(e=>!registered.has(e.id)),...this.data.evidence.filter(e=>referenced.has(e.id)||socialIds.has(e.id)),...this.pending.slice(-16),observation,operator].map(e=>[e.id,e]));
-  return {revision:this.data.revision,needsReview:this.needsReview,observationId:observation.id,goals:structuredClone(this.data.goals),evidence:structuredClone([...all.values()])};
+  return {revision:this.data.revision,needsReview:this.needsReview,...(this.needsReview?{reviewState:structuredClone(this.reviewState)}:{}),observationId:observation.id,goals:structuredClone(this.data.goals),evidence:structuredClone([...all.values()])};
  }
  apply(review:GoalReview,updates:unknown,activeId:string|null){
   validateGoalUpdates(updates);if(review.revision!==this.data.revision)throw Error('Invalid stale goal review');
@@ -73,6 +84,8 @@ export class GoalBook{
    const g:Goal={id:u.id,description:u.description,reason:u.reason,status:u.status,successCriteria:u.successCriteria,evidenceIds:[...u.evidenceIds],pauseReason:u.status==='paused'?u.pauseReason:undefined,version:(old?.version??0)+1,createdAt:old?.createdAt??Date.now(),updatedAt:Date.now()};
    next.goals=next.goals.filter(x=>x.id!==u.id);next.goals.push(g);next.revisions.push(structuredClone(g));
   }
+  // Activating another goal records an unmentioned previous one as interrupted, not as a managed list entry.
+  if(activeId!==null)for(const g of next.goals)if(g.status==='active'&&g.id!==activeId&&!updates.some(u=>u.id===g.id)){g.status='paused';g.pauseReason=`Interrupted: review activated ${activeId}`;g.version++;g.updatedAt=Date.now();next.revisions.push(structuredClone(g));}
   const active=next.goals.filter(g=>g.status==='active');
   if(active.length>1||(activeId===null?active.length>0:active.length!==1||active[0].id!==activeId))throw Error('Invalid active goal selection');
   if(this.needsReview&&activeId!==null&&!updates.some(g=>g.id===activeId&&g.status==='active'&&g.evidenceIds.includes(review.observationId)))throw Error('Invalid unreviewed restored goal');

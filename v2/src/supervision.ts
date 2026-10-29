@@ -1,11 +1,12 @@
+import {pickupTargets} from './pickup.js';
 import {candidates,type Snapshot,type Plan,type Action} from './types.js';
 import {supportsFeet} from './building.js';
 import {intentSatisfied} from './work-intent.js';
 import type {PlanningState,SelectionFeedbackStatus} from './review-lifecycle.js';
 export type Option={id:string;action:Action;plan:Plan};
 export type Route='respond'|'clarify'|'observe'|'other'|'defer';
-export type Supervision={attempt?:{action:Action;boundArguments:Record<string,unknown>;unresolvedArgument?:{name:string;availableValues:number}};selected?:Option;reason?:string;choice:string;confidence:number;review:'none'|'medium'|'long';routes:Record<string,Route>;selectionControl?:{action:string;review:'none'|'medium'|'long';argumentOutcome?:'withdrawn'|'empty_domain'}};
-export type SupervisorInput={placeMemoryReview?:ReturnType<import("./important-places.js").ImportantPlaces["review"]>;executionEvidence?:ReturnType<typeof import('./execution-evidence.js').executionEvidence>;parameterSelection?:boolean;selectionFeedback?:string;planningState?:PlanningState;selectionFeedbackStatus?:SelectionFeedbackStatus;blockedInteractions?:unknown;options:Option[];execution:{id:number;action:Action;plan:Plan;elapsedMs:number;motor?:import('./types.js').MotorProgress;observedChanges?:unknown;interruptionNote?:string}|null;inbox:import('./social.js').ChatEvent[];goal:string|null;plan?:Plan;progress?:unknown;recentOutcome?:unknown;recentResults?:unknown[];recentLookResults?:unknown[];recovery?:unknown};
+export type Supervision={attempt?:{action:Action;boundArguments:Record<string,unknown>;offeredArguments?:import('./selection-facts.js').ArgumentOffer[];unresolvedArgument?:{name:string;availableValues:number}};selected?:Option;reason?:string;choice:string;confidence:number;review:'none'|'medium'|'long';routes:Record<string,Route>;selectionControl?:{action:string;review:'none'|'medium'|'long';argumentOutcome?:'withdrawn'|'empty_domain'}};
+export type SupervisorInput= {planFreshness?:ReturnType<typeof import("./plan-freshness.js").planFreshness>;userRequest?:string|null;userRequestStatus?:import('./types.js').UserRequestStatus;goalReview?:ReturnType<typeof import('./goal-review.js').reviewFacts>;deliveries?:ReturnType<import('./deliveries.js').DeliveryLog['view']>;requestDecisions?:{messageId:string;decision:string;reason?:string}[];includeDialogue?:boolean;procedureOfferStatus?:import("./procedure.js").ProcedureOfferStatus;procedure?:import("./procedure.js").ProcedureView;procedureAvailable?:boolean;placeMemoryReview?:ReturnType<import("./important-places.js").ImportantPlaces["review"]>;executionEvidence?:ReturnType<typeof import('./execution-evidence.js').executionEvidence>;parameterSelection?:boolean;selectionFeedback?:string;planningState?:PlanningState;selectionFeedbackStatus?:SelectionFeedbackStatus;blockedInteractions?:unknown;options:Option[];execution:{id:number;action:Action;plan:Plan;elapsedMs:number;motor?:import('./types.js').MotorProgress;observedChanges?:unknown;interruptionNote?:string}|null;inbox:import('./social.js').ChatEvent[];goal:string|null;plan?:Plan;progress?:unknown;recentOutcome?:unknown;recentResults?:unknown[];recentLookResults?:unknown[];recovery?:unknown};
 // These are executable, observed alternatives, not a hidden task curriculum.
 export function executionOptions(s:Snapshot,p:Plan):Option[]{
  if(p.intent)return observedOptions(s,p);
@@ -13,7 +14,7 @@ export function executionOptions(s:Snapshot,p:Plan):Option[]{
  const add=(plan:Plan,only?:Action)=>{for(const action of candidates(s,plan)){if(action==='idle'||only&&action!==only)continue;const candidate={...plan,preferred:action};if(action==='place_table'&&plan.preferred!=='place_table')continue;const key=executionIdentity(action,candidate);if(seen.has(key))continue;seen.add(key);out.push({id:'option_'+out.length,action,plan:candidate});}};
  add(p);
  for(const b of (s.vision?.blocks??[]).filter(b=>!!p.mine&&b.name===p.mine.expected&&!supportsFeet(b.position,s.position)).sort((a,b)=>distance(a.position,s)-distance(b.position,s)).slice(0,6))add({goal:p.goal,preferred:'mine',mine:{position:b.position,expected:b.name}},'mine');
- for(const i of (s.visibleItems??[]).slice(0,4))add({goal:p.goal,preferred:'pickup',pickup:{entityId:i.id,expected:i.name}},'pickup');
+ for(const i of pickupTargets(s).slice(0,4))add({goal:p.goal,preferred:'pickup',pickup:{entityId:i.id,expected:i.name}},'pickup');
  // Crafting spends resources: only offer parameterized planner proposals, not every feasible recipe.
  // Moving to arbitrary remembered blocks can chase treetops unrelated to the plan.
  // Only the planner-proposed destination is offered; the executor handles local waypoints.
@@ -22,7 +23,7 @@ export function executionOptions(s:Snapshot,p:Plan):Option[]{
 function distance(p:Snapshot['position'],s:Snapshot){return Math.hypot(p.x-s.position.x,p.y-s.position.y,p.z-s.position.z);}
 
 export function executionIdentity(action:Action,p:Plan){
- const parameters=action==='mine'?(p.mine?{...p.mine,maxMs:p.mine.maxMs??30000}:undefined):action==='move'?p.destination:action==='craft'?p.craft:action==='pickup'?p.pickup:['place_block','place_table'].includes(action)?p.build:action==='equip'?p.equip:action==='look'?p.look:action==='idle'?p.waitMs:action==='eat'?p.foodItem:action==='follow'?p.followPlayer:['attack','flee'].includes(action)?p.targetEntityId:['inspect_container','deposit','withdraw'].includes(action)?[p.container,p.transfer]:action==='give'?p.transfer:null;
+ const parameters=action==='sleep'?p.bed:action==='mine'?(p.mine?{...p.mine,maxMs:p.mine.maxMs??30000}:undefined):action==='move'?p.destination:action==='craft'?p.craft:action==='pickup'?p.pickup:['place_block','place_table'].includes(action)?p.build:action==='equip'?p.equip:action==='look'?p.look:action==='idle'?p.waitMs:action==='eat'?p.foodItem:action==='follow'?p.followPlayer:['attack','flee'].includes(action)?p.targetEntityId:['inspect_container','deposit','withdraw'].includes(action)?[p.container,p.transfer]:action==='give'?p.transfer:null;
  const stable=(v:any):any=>Array.isArray(v)?v.map(stable):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).filter(([,x])=>x!==undefined).sort(([a],[b])=>a.localeCompare(b)).map(([k,x])=>[k,stable(x)])):v;
  return JSON.stringify(stable([action,parameters]));
 }
@@ -64,7 +65,7 @@ export function observedOptions(s:Snapshot,p:Plan):Option[]{
   const pos=group.find(pos=>candidates(s,{goal:p.goal,preferred:'move',destination:pos}).includes('move'));
   if(pos)add('move',{destination:pos});
  }
- for(const item of (s.visibleItems??[]).slice(0,4))add('pickup',{pickup:{entityId:item.id,expected:item.name}});
+ for(const item of pickupTargets(s).slice(0,4))add('pickup',{pickup:{entityId:item.id,expected:item.name}});
  const desired=new Set(p.intent?.desiredInventory.map(i=>i.item));
  for(const item of [...s.craftable??[]].sort((a,b)=>Number(desired.has(b))-Number(desired.has(a))||a.localeCompare(b)).slice(0,8))add('craft',{craft:{item,count:1}});
  if(s.canPlaceTable&&!s.vision?.blocks.some(b=>b.name==='crafting_table'))add('place_table');

@@ -1,6 +1,7 @@
+import {terrainAreas,placementRegions,rectCells} from './map-regions.js';
 import type {Snapshot} from './types.js';
 import {key,type SeenBlock,type Position} from './vision.js';
-export const SPATIAL={detailRadius:8,localRadius:48,sectors:8,nearRows:256};
+export const SPATIAL={detailRadius:12,localRadius:48,sectors:8,nearRows:256};
 const distance=(p:Position,o:Position)=>Math.hypot(p.x+.5-o.x,p.y+.5-o.y,p.z+.5-o.z);
 export function localTerrain(s:Snapshot){
  const blocks=new Map<string,SeenBlock>();
@@ -19,12 +20,45 @@ export function terrainRegions(s:Snapshot){
  }
  return [...groups.values()].sort((a,b)=>a.id.localeCompare(b.id));
 }
-export function spatialContext(s:Snapshot){
+function fullSpatialContext(s:Snapshot){
  const visible=new Set(s.vision?.blocks.map(b=>key(b.position))??[]);
- const near=localTerrain(s).filter(b=>distance(b.position,s.position)<=SPATIAL.detailRadius).sort((a,b)=>distance(a.position,s.position)-distance(b.position,s.position)||key(a.position).localeCompare(key(b.position)));
- const selected=near.slice(0,SPATIAL.nearRows),origin={x:Math.floor(s.position.x),y:Math.floor(s.position.y),z:Math.floor(s.position.z)},timeBase=selected.length?Math.max(...selected.map(b=>b.lastSeen)):0,names=[...new Set(selected.map(b=>b.name))];
- return {mode:'automatic_occluded_panorama',detailRadius:8,summaryRadius:48,
-  near:{origin,timeBase,names,rows:selected.map(b=>[b.position.x-origin.x,b.position.y-origin.y,b.position.z-origin.z,names.indexOf(b.name),b.lastSeen-timeBase,visible.has(key(b.position))?1:0]),total:near.length,omitted:near.length-selected.length,encoding:'[dx,dy,dz,nameIndex,timeDeltaMs,current]. Exact position=origin+[dx,dy,dz], lastSeen=timeBase+timeDeltaMs. Closest 256 exact cells; all other observed cells remain available through region argument selection. Missing cells are unknown, not empty.'},
+ const near=localTerrain(s).filter(b=>distance(b.position,{...s.position,y:s.position.y+1.62})<=SPATIAL.detailRadius);
+ const areas=terrainAreas(near,visible);
+ return {mode:'automatic_occluded_panorama',dimension:s.dimension,feetPosition:s.position,detailRadius:12,summaryRadius:48,
+  coordinateRules:'Integer block cells; x east, z south, y up. Inclusive ranges contain exactly the listed cells, not a filled volume between separate regions.',
+  near:{names:[...new Set(near.map(b=>b.name))],total:near.length,omitted:0,
+   currentObservation:areas.filter(a=>a.source==='current_observation'),rememberedTerrain:areas.filter(a=>a.source==='past_observation'),
+   meaning:'Exact observed block cells grouped losslessly by material, layer and observation time. A block cell is not a full collision cube. Unlisted space is unknown; no air or walking clearance is implied.'},
   regions:terrainRegions(s).map(g=>({id:g.id,direction:g.direction,distanceBand:g.band,observedCells:g.points.length,currentCells:g.current,lastSeen:Math.max(...g.points.map(b=>b.lastSeen)),materials:[...new Set(g.points.map(b=>b.name))].sort()})),
-  meaning:'First-hit surfaces from automatic surrounding observation, not x-ray or complete terrain. Historical cells retain their observation time and may have changed. Regions summarize observed cells only: no filled volume, inferred connectivity or safety. Select a region to receive its exact action targets. Remote ordinary terrain stays on disk; local context does not grow with journey length.'};
+  occludedSpace:{sampledAxisRays:s.perception?.occlusion??[],meaning:'A first-hit surface hides farther points on that sightline only. A null ray does not establish an empty sector.'},
+  interactionGeometry:{placement:placementRegions(s),meaning:'Exact currently observed empty target cells and supporting blocks; reference=target-targetOffsetFromSupport. Regions do not fill holes. No route or placement success is guaranteed. Work includes approach and revalidation.'},
+  sources:{importantPlaces:'Supplied separately with observation times; remembered existence is not current proof.',playerReports:'Supplied in dialogue/messages with attribution; not promoted to observed terrain.'},
+  meaning:'Near surfaces are inspected per block with occlusion; distant surfaces are sampled and summarized, not exhaustive. Historical cells may have changed. Remote ordinary terrain stays on disk; local context does not grow with journey length.'};
 }
+
+// UTF-8 bytes conservatively bound tokenizer input; target domains stay on Snapshot.
+export const MAP_INPUT_BYTES=16000;
+export function boundedSpatialContext(raw:ReturnType<typeof fullSpatialContext>){
+ const size=(x:unknown)=>Buffer.byteLength(JSON.stringify(x));
+ if(size(raw)<=MAP_INPUT_BYTES)return raw;
+ const all=[...raw.near.currentObservation,...raw.near.rememberedTerrain];
+ const placementCount=raw.interactionGeometry.placement.reduce((n,g)=>n+rectCells(g.targetCells).length,0);
+ for(const radius of [3,2,1,0]){
+  const areas=all.flatMap(a=>{
+   const cells=rectCells(a.cells).filter(p=>Math.hypot(p.x+.5-raw.feetPosition.x,p.y+.5-raw.feetPosition.y-1.62,p.z+.5-raw.feetPosition.z)<=radius);
+   return terrainAreas(cells.map(position=>({name:a.block,position,lastSeen:a.lastObservedAt})),new Set(a.source==='current_observation'?cells.map(key):[]));
+  });
+  const detailed=areas.reduce((n,a)=>n+rectCells(a.cells).length,0);
+  const next={...raw,detailRadius:radius,
+   near:{...raw.near,names:[...new Set(areas.map(a=>a.block))],omitted:raw.near.total-detailed,currentObservation:areas.filter(a=>a.source==='current_observation'),rememberedTerrain:areas.filter(a=>a.source==='past_observation'),meaning:'Exact cells only inside detailRadius. Other observed cells are summarized in regions, not absent. Only targets inside each current actionScopes radius are available as individual action arguments; other known terrain remains in this map. Unlisted space is unknown, never implied clear.'},
+   interactionGeometry:{placement:[],meaning:`${placementCount} observed placement sites inside the current local selection scope. Choose place_block to select an exact site; approach and revalidation are included. No path is guaranteed.`},
+   meaning:'Bounded map overview. Coarse regions summarize observations only, NOT filled volumes or certified routes. Detailed target domains remain available in action argument selection; summary does not remove targets. Past observations may be stale.'};
+  if(size(next)<=MAP_INPUT_BYTES)return next;
+  // If even material lists exceed the budget, preserve every sector and counts;
+  // material identity remains in the hierarchical argument domains, not a top-k list.
+  const coarse={...next,regions:next.regions.map(g=>({...g,materials:[],materialKinds:g.materials.length,materialDetail:'Available through action argument groups; no material was excluded from the domain.'}))};
+  if(size(coarse)<=MAP_INPUT_BYTES)return coarse;
+ }
+ throw Error('Map overview exceeded fixed byte budget');
+}
+export function spatialContext(s:Snapshot){return boundedSpatialContext(fullSpatialContext(s));}

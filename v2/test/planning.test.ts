@@ -1,3 +1,4 @@
+import {actionView} from '../src/action-view.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {Runtime} from '../src/runtime.js';
@@ -61,7 +62,7 @@ test('bounded journal preserves failures and net changes in older summary',()=>{
 test('planner payload includes structured evidence and validates measurable steps',async()=>{
  const f=setup();await prime(f.runtime);await f.runtime.tick();const ctx=f.runtime.planning;
  const transport=(async(_u:any,init:any)=>{const body=JSON.parse(init.body);const payload=JSON.parse(body.messages[1].content);
- const {executionEvidence,...original}=payload.planning;assert.deepEqual(original,JSON.parse(JSON.stringify(ctx)));assert.ok(Array.isArray(executionEvidence.failedMoves));return Response.json({choices:[{message:{content:JSON.stringify(stepPlan)}}],usage:{prompt_tokens:1,completion_tokens:1}});}) as typeof fetch;
+ const {executionEvidence,recentActions,...original}=payload.planning;const {recentActions:full,...rest}=ctx as any;assert.deepEqual(original,JSON.parse(JSON.stringify(rest)));assert.deepEqual(recentActions,JSON.parse(JSON.stringify(full.map(actionView))));assert.ok(Array.isArray(executionEvidence.failedMoves));return Response.json({choices:[{message:{content:JSON.stringify(stepPlan)}}],usage:{prompt_tokens:1,completion_tokens:1}});}) as typeof fetch;
  const brain=new ApiBrain({...config(),targetPolicy:'planner',llmKey:'fake'},new Budget(1,1),transport);
  const result=await brain.plan(f.world.snapshot(),[],new AbortController().signal,null,ctx);assert.equal(result.steps?.[0].id,'wood');
  assert.throws(()=>parsePlan({...stepPlan,steps:[{...stepPlan.steps![0],completion:{kind:'monster_dead'}}]}));

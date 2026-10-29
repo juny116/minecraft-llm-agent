@@ -17,6 +17,16 @@ export function placeEvidence(s:Snapshot):PlaceEvidence[]{
  for(const p of s.importantPlaces??[]){if(ids.has(p.id))continue;const b={name:p.lastObservedBlock,position:p.position,lastSeen:p.lastSeen};current.push({...b,dimension:p.dimension,id:p.id+'_'+createHash('sha256').update(JSON.stringify([b.name,b.lastSeen])).digest('hex').slice(0,12)});}
  return current;
 }
+export function validatePlaceUpdates(updates:unknown,evidence:PlaceEvidence[]){
+ if(updates===undefined)return [];
+  if(!Array.isArray(updates)||updates.length>12)throw Error('Invalid place updates: at most 12 per review');
+  // Validate the complete batch before mutating. Coordinates come only from supplied evidence.
+  return updates.map((u:any,index:number)=>{
+   if(!u||typeof u.label!=='string'||!u.label.trim()||u.label.length>120||typeof u.reason!=='string'||!u.reason.trim()||u.reason.length>300||!['active','archived'].includes(u.importance??'active'))throw Error('Invalid place annotation');
+   const source=evidence.find(b=>b.id===u.evidenceId);if(!source)throw Error('Invalid place evidence ID at update '+(index+1)+': value is not in the supplied placeCitationContract.allowedEvidenceIds; copy an exact allowed reference');
+   return {u,source};
+  });
+}
 export class ImportantPlaces {
  private data:{receipts?:PlaceReceipt[];schema:1;profile:string;places:ImportantPlace[];history:{at:number;before?:ImportantPlace;after:ImportantPlace}[]};
  private dirty=false;private lastSave=0;
@@ -44,13 +54,7 @@ export class ImportantPlaces {
   this.flush();
  }
  private applyBatch(updates:unknown,evidence:PlaceEvidence[]){
-  if(!Array.isArray(updates)||updates.length>12)throw Error('Invalid place updates: at most 12 per review');
-  // Validate the complete batch before mutating. Coordinates come only from supplied evidence.
-  const patches=updates.map((u:any,index:number)=>{
-   if(!u||typeof u.label!=='string'||!u.label.trim()||u.label.length>120||typeof u.reason!=='string'||!u.reason.trim()||u.reason.length>300||!['active','archived'].includes(u.importance??'active'))throw Error('Invalid place annotation');
-   const source=evidence.find(b=>b.id===u.evidenceId);if(!source)throw Error('Invalid place evidence ID at update '+(index+1)+': copy an exact placeCitationContract.allowedEvidenceIds value, not an existing place record ID');
-   return {u,source};
-  });
+  const patches=validatePlaceUpdates(updates,evidence);
   const applied:PlaceReceipt["updates"]=[];
   for(const {u,source:b} of patches){
    const id=coordinateId(b.dimension,b.position),old=this.data.places.find(p=>p.id===id);

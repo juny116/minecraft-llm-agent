@@ -29,11 +29,33 @@ export function referenceRequest(context:Record<string,any>,questions:Record<str
   return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,walk(x,false,strings)]));
  };
  const state=walk(context),q=Object.fromEntries(Object.entries(questions).map(([name,question])=>[name,{...question,criteria:Object.fromEntries(Object.entries(question.criteria).map(([id,v])=>[id,walk(v,false,false)]))}]));
- return jevLosslessRequest({...state,entityTable:entities,referenceContract:'Every {$entity:id} refers to the exact value (object or text) in entityTable, shared by observation and question arguments. Resolve references before choosing. IDs are not rankings. Only supplied choices can be returned.'},q);
+ const choiceTables:Record<string,any>={};
+ for(const [name,question] of Object.entries(q)){
+  const entries=Object.entries(question.criteria) as [string,any][];
+  if(entries.length<32||!entries.every(([,v])=>object(v)&&Object.keys(v).length===2&&typeof v.description==='string'&&Object.hasOwn(v,'value')))continue;
+  const descriptions=[...new Set(entries.map(([,v])=>v.description))];
+  choiceTables[name]={ids:entries.map(([id])=>id),descriptions,descriptionIndices:entries.map(([,v])=>descriptions.indexOf(v.description)),values:entries.map(([,v])=>v.value)};
+  question.criteria=Object.fromEntries(entries.map(([id],i)=>{
+   const original=questions[name].criteria[id]?.value,p=original?.position??original;
+   // Keep the exact table for metadata, but put action-relevant identity beside
+   // the choice ID. Reference-only labels caused order-sensitive selections.
+   const label=position(p)?`${typeof original.name==='string'?original.name:name} at (${p.x},${p.y},${p.z})`:`Choice table ${name}, row ${i}`;
+   return [id,label];
+  }));
+ }
+ const blockEntries=Object.entries(entities).filter(([,v])=>isSeenCell(v));
+ const entityBlocks={ids:blockEntries.map(([id])=>id),values:blockEntries.map(([,v])=>v)};
+ for(const [id]of blockEntries)delete entities[id];
+ return jevLosslessRequest({...state,choiceTables,entityBlocks,entityTable:entities,referenceContract:'choiceTables stores exact question options: ids and values use the same row index; descriptionIndices indexes descriptions. Choose the original option ID, not the row number. entityBlocks pairs ids with values by row. Every {$entity:id} refers to the exact value (object or text) in entityTable, shared by observation and question arguments. Resolve references before choosing. IDs are not rankings. Only supplied choices can be returned.'},q);
 }
 export function decodeReferenceRequest(state:any,questions:any){
- const decoded=decodeJevState(state),{entityTable,referenceContract,...context}=decoded;
+ const decoded=decodeJevState(state),{entityTable,entityBlocks,choiceTables,referenceContract,...context}=decoded;
  if(!entityTable)return {context:decoded,questions:decodeJevQuestions(questions)};
+ if(entityBlocks)entityBlocks.ids.forEach((id:string,i:number)=>{entityTable[id]=entityBlocks.values[i];});
+ const restored=decodeJevQuestions(questions);
+ for(const [name,t] of Object.entries(choiceTables??{}) as [string,any][]) {
+  for(let i=0;i<t.ids.length;i++)restored[name].criteria[t.ids[i]]={description:t.descriptions[t.descriptionIndices[i]],value:t.values[i]};
+ }
  const walk=(v:any,ancestors=new Set<string>()):any=>{
   if(Array.isArray(v))return v.map(x=>walk(x,ancestors));if(!object(v))return v;
   if(Object.keys(v).length===1&&typeof v.$entity==='string'){
@@ -42,5 +64,5 @@ export function decodeReferenceRequest(state:any,questions:any){
   }
   return Object.fromEntries(Object.entries(v).map(([k,x])=>[k,walk(x,ancestors)]));
  };
- return {context:walk(context),questions:walk(decodeJevQuestions(questions))};
+ return {context:walk(context),questions:walk(restored)};
 }

@@ -41,3 +41,7 @@ memory/
 !v2/.env.example
 v2/runs/
 v2/dist/
+
+# macOS metadata
+._*
+.DS_Store

@@ -55,3 +55,30 @@ export function sampleSurroundings(cast:(direction:Position)=>{name:string;posit
  for(const [yaw,pitch]of [[0,0],[Math.PI/2,0],[Math.PI,0],[3*Math.PI/2,0],[0,Math.PI/2],[0,-Math.PI/2]])for(const b of sampleView(yaw,pitch,cast,now,true))blocks.set(key(b.position),b);
  return [...blocks.values()];
 }
+
+export const NEAR_DETAIL_RADIUS=12;
+// Inspect possible target geometry locally, but release a block's identity only
+// after a first-hit ray proves an exposed face. Unknown chunks are never air.
+export function sampleNearSurfaces(eye:Position,read:(p:Position)=>{name:string;boundingBox?:string}|null,cast:(d:Position,length:number)=>Position|null,now:number,previous:SeenBlock[]=[],radius=NEAR_DETAIL_RADIUS):SeenBlock[]{
+ const seen=new Map<string,SeenBlock>(),old=new Set(previous.map(b=>key(b.position))),cache=new Map<string,ReturnType<typeof read>>();
+ const at=(p:Position)=>{const k=key(p);if(!cache.has(k))cache.set(k,read(p));return cache.get(k)!;};
+ const air=(b:ReturnType<typeof read>)=>!!b&&['air','cave_air','void_air'].includes(b.name);
+ for(let y=Math.floor(eye.y-radius);y<=Math.floor(eye.y+radius);y++)for(let z=Math.floor(eye.z-radius);z<=Math.floor(eye.z+radius);z++)for(let x=Math.floor(eye.x-radius);x<=Math.floor(eye.x+radius);x++){
+  const p={x,y,z},dx=x+.5-eye.x,dy=y+.5-eye.y,dz=z+.5-eye.z,len=Math.hypot(dx,dy,dz);if(len>radius)continue;
+  const b=at(p);if(!b)continue;
+  if(air(b)){
+   // Reobserve a removed remembered block; do not report the whole air volume.
+   if(old.has(key(p))&&len>0&&!cast({x:dx/len,y:dy/len,z:dz/len},len))seen.set(key(p),{name:b.name,position:p,lastSeen:now});
+   continue;
+  }
+  for(const [a,c,d] of [[0,1,0],[0,-1,0],[1,0,0],[-1,0,0],[0,0,1],[0,0,-1]]){
+   const target={x:x+.5+a*.499,y:y+.5+c*.499,z:z+.5+d*.499};
+   if(a*(eye.x-target.x)+c*(eye.y-target.y)+d*(eye.z-target.z)<=0)continue;
+   const n=at({x:x+a,y:y+c,z:z+d});if(!n||!(air(n)||n.boundingBox==='empty'))continue;
+   const dx=target.x-eye.x,dy=target.y-eye.y,dz=target.z-eye.z,len=Math.hypot(dx,dy,dz);
+   const hit=cast({x:dx/len,y:dy/len,z:dz/len},len+.01);
+   if(hit&&key(hit)===key(p)){seen.set(key(p),{name:b.name,position:p,lastSeen:now});break;}
+  }
+ }
+ return [...seen.values()];
+}

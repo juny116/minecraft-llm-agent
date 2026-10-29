@@ -3,6 +3,28 @@ import {setTimeout as delay} from 'node:timers/promises';
 export const destinations=['hand','off-hand','head','torso','legs','feet'] as const;
 export type EquipRequest={item:string|null;destination:typeof destinations[number];sourceSlot?:number};
 export function compatible(item:string,d:EquipRequest['destination']){return d==='hand'||d==='off-hand'||d==='head'&&(/_helmet$/.test(item)||['turtle_helmet','carved_pumpkin'].includes(item))||d==='torso'&&(/_chestplate$/.test(item)||item==='elytra')||d==='legs'&&/_leggings$/.test(item)||d==='feet'&&/_boots$/.test(item);}
+// This is a command convention, not a loadout recommendation.
+export function defaultEquipmentDestination(item:string):EquipRequest['destination']{
+ return destinations.find(d=>d!=='hand'&&d!=='off-hand'&&compatible(item,d))??'hand';
+}
+export type EquipmentChoice=[number,string|null,'default'|EquipRequest['destination']];
+// Changes that would leave equipment as it is are not offered: re-equipping the held item "succeeded" without
+// effect and was repeated every 1-2 s (CONT1 Alice: wooden_axe; CONT2 Bob: oak_log).
+const SLOT_OF:Record<string,string>={head:'head',torso:'chest',legs:'legs',feet:'feet','off-hand':'offhand',hand:'hand'};
+export function equipmentChoices(inventory:{slot:number;name:string}[]=[],equipped?:{slot:string;name:string}[]):EquipmentChoice[]{
+ const items=[...new Map(inventory.filter(i=>Number.isInteger(i.slot)&&i.slot>=5&&i.slot<=45).map(i=>[i.slot,i])).values()];
+ const worn=(d:EquipRequest['destination'])=>equipped?.find(e=>e.slot===SLOT_OF[d])?.name;
+ const noop=([slot,item,mode]:EquipmentChoice)=>{if(!equipped)return false;const d=mode==='default'?(item===null?'hand':defaultEquipmentDestination(item)):mode;return item===null?!worn(d):worn(d)===item||(slot>=5&&slot<=8||slot===45)&&mode==='default';};
+ return [...items.flatMap(i=>{
+  const choices:EquipmentChoice[]=[[i.slot,i.name,'default']];
+  if(defaultEquipmentDestination(i.name)==='hand')choices.push([i.slot,i.name,'off-hand']);
+  return choices;
+ }),...destinations.map(d=>[-1,null,d] as EquipmentChoice)].filter(c=>!noop(c));
+}
+export function equipmentRequest([sourceSlot,item,mode]:EquipmentChoice):EquipRequest{
+ const destination=mode==='default'?(item===null?'hand':defaultEquipmentDestination(item)):mode;
+ return {item,destination,...(sourceSlot<0?{}:{sourceSlot})};
+}
 export function validateEquip(p:EquipRequest){if(!p||!destinations.includes(p.destination)||p.item!==null&&(typeof p.item!=='string'||!/^[a-z0-9_]+$/.test(p.item)||!compatible(p.item,p.destination))||p.sourceSlot!==undefined&&(!Number.isInteger(p.sourceSlot)||p.sourceSlot<5||p.sourceSlot>45||p.item===null))throw Error('Invalid equipment request');}
 export async function executeEquip(bot:Bot,p:EquipRequest,signal:AbortSignal){
  validateEquip(p);signal.throwIfAborted();if(bot.currentWindow||bot.inventory.selectedItem)throw Error('Equipment requires closed window and empty cursor');

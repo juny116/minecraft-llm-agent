@@ -13,13 +13,13 @@ function fixture(){
  const w=Object.create(MineflayerWorld.prototype) as any;let count=5,placed=0,dug=0;const cells=new Map<string,any>();const key=(p:V)=>`${p.x},${p.y},${p.z}`;
  const put=(p:any,name:string)=>cells.set(key(p),{name,position:new V(p.x,p.y,p.z),stateId:name==='dirt'?1:name==='air'?0:2,diggable:true});put(reference,'dirt');put(position,'air');
  w.visible=[{name:'dirt',position:reference}];w.observe=()=>{};w.memory={observe:()=>{}};w.stop=()=>{};w.navigate=async()=>{};w.blockInSight=()=>true;w.miningFace=()=>new V(0,1,0);
- const bot={entity:{position:new V(0,0,0),width:.6,height:1.8},entities:{},registry:{blocksByName:{oak_planks:{}}},inventory:{items:()=>[{name:'oak_planks',count,type:1}]},blockAt:(p:V)=>cells.get(key(p)),pathfinder:{bestHarvestTool:()=>null},canDigBlock:()=>true,lookAt:async()=>{},equip:async()=>{},clickWindow:async()=>{},getControlState:()=>false,setControlState:()=>{},world:{raycast:()=>null},placeBlock:async()=>{placed++;count--;put(position,'oak_planks');},dig:async(b:any)=>{dug++;put(b.position,'air');}};Object.assign(bot,{on:EventEmitter.prototype.on,removeListener:EventEmitter.prototype.removeListener,stopDigging:()=>{}});w.bot=bot;
+ const bot={waitForTicks:async()=>{},entity:{position:new V(0,0,0),width:.6,height:1.8},entities:{},registry:{blocksByName:{oak_planks:{}}},inventory:{items:()=>[{name:'oak_planks',count,type:1}]},blockAt:(p:V)=>cells.get(key(p)),pathfinder:{bestHarvestTool:()=>null},canDigBlock:()=>true,lookAt:async()=>{},equip:async()=>{},clickWindow:async()=>{},getControlState:()=>false,setControlState:()=>{},world:{raycast:()=>null},placeBlock:async()=>{placed++;count--;put(position,'oak_planks');},dig:async(b:any)=>{dug++;put(b.position,'air');}};Object.assign(bot,{on:EventEmitter.prototype.on,removeListener:EventEmitter.prototype.removeListener,stopDigging:()=>{}});w.bot=bot;
  return {w,bot,put,stats:()=>({count,placed,dug})};
 }
 const signal=()=>new AbortController().signal;
 test('materials and face adjacency validated without imposing a building goal',()=>{
- for(const name of ['oak_planks','stone','glass','red_wool','dirt'])assert.ok(buildingMaterial(name));
- for(const name of ['sand','water_bucket','oak_door','red_bed','tnt'])assert.ok(!buildingMaterial(name));
+ for(const name of ['oak_planks','stone','glass','red_wool','dirt','oak_slab','oak_fence','cobblestone_wall'])assert.ok(buildingMaterial(name));
+ for(const name of ['sand','water_bucket','oak_door','tnt','acacia_pressure_plate','oak_stairs'])assert.ok(!buildingMaterial(name));
  validateBuild(plan.build!);assert.throws(()=>validateBuild({...plan.build!,position:{x:5,y:0,z:0}}));assert.throws(()=>validateDig({position,expected:'bedrock'}));
  const parsed=parsePlan({...plan,steps:[{id:'a',description:'place',action:'place_block',build:plan.build,completion:{kind:'action_success'}}]});assert.deepEqual(parsed.steps?.[0].build,plan.build);
  assert.throws(()=>parsePlan({goal:'dig',preferred:'mine'}));
@@ -79,17 +79,17 @@ test('runtime forwards cancelled placement effect in action history instead of o
 });
 
 test('placement candidates beyond hand reach remain selectable but hidden faces do not',()=>{
- const f=fixture();f.bot.entity.position=new V(-10,0,0);
+ const f=fixture();f.bot.entity.position=new V(-8,0,0);
  const sites=f.w.observedPlacementSites();assert.ok(sites.some((s:any)=>s.position.x===position.x&&s.position.y===position.y&&s.position.z===position.z));
  f.bot.world.raycast=(()=>({})) as any;assert.equal(f.w.observedPlacementSites().length,0);
 });
-test('selected distant placement approaches before dispatch without a separate move action',async()=>{
- const f=fixture();f.bot.entity.position=new V(-10,0,0);let approaches=0;
+test('selected local placement beyond hand reach approaches before dispatch without a separate move action',async()=>{
+ const f=fixture();f.bot.entity.position=new V(-8,0,0);let approaches=0;
  f.w.navigate=async()=>{approaches++;assert.equal(f.stats().placed,0);f.bot.entity.position=new V(0,0,0);};
  assert.match(await f.w.execute('place_block',signal(),plan),/Placed/);assert.equal(approaches,1);assert.equal(f.stats().placed,1);
 });
 test('failed approach reports failure and never places at a substitute target',async()=>{
- const f=fixture();f.bot.entity.position=new V(-10,0,0);f.w.navigate=async()=>{throw Error('No path to selected support');};
+ const f=fixture();f.bot.entity.position=new V(-8,0,0);f.w.navigate=async()=>{throw Error('No path to selected support');};
  await assert.rejects(f.w.execute('place_block',signal(),plan),/No path to selected support/);assert.equal(f.stats().placed,0);assert.equal(f.w.executionReceipt().requestIssued,false);
 });
 test('remembered mining target is approached before current hidden block state is read',async()=>{
@@ -97,4 +97,29 @@ test('remembered mining target is approached before current hidden block state i
  const read=f.bot.blockAt;f.bot.blockAt=(p:V)=>{assert.ok(approached);return read(p);};
  f.w.navigate=async()=>{approached=true;f.w.visible=[{name:'dirt',position:reference,lastSeen:2}];};
  const result=JSON.parse(await f.w.execute('mine',signal(),{goal:'remove',preferred:'mine',mine:{position:reference,expected:'dirt'}}));assert.equal(result.blockBroken,true);assert.equal(f.stats().dug,1);
+});
+
+test('far placement requires an explicit move first and never auto-approaches',async()=>{
+ const f=fixture();f.bot.entity.position=new V(-20,0,0);let approached=false;
+ f.w.navigate=async()=>{approached=true;};
+ assert.equal(f.w.observedPlacementSites().length,0);
+ await assert.rejects(f.w.execute('place_block',signal(),plan),/outside local 12-block scope/);
+ assert.equal(approached,false);assert.equal(f.stats().placed,0);
+});
+test('remembered-only support cannot start local placement',async()=>{
+ const f=fixture();f.w.visible=[];f.w.knownPlaces=()=>[{name:'dirt',position:reference,lastSeen:1}];
+ await assert.rejects(f.w.execute('place_block',signal(),plan),/not currently observed/);assert.equal(f.stats().placed,0);
+});
+
+test('bed placement preserves model orientation, confirms both halves, rejects occupied head',async()=>{
+ for(const blocked of [false,true]){
+  const f=fixture(),head={x:3,y:0,z:0},floor={x:3,y:-1,z:0};let count=2,calls=0,yaw:number|undefined;
+  f.w.visible.push({name:'dirt',position:floor});f.put(floor,'dirt');f.put(head,blocked?'stone':'air');
+  const lookup=f.bot.blockAt;f.bot.blockAt=((p:V)=>{const b=lookup(p);if(b){b.boundingBox=b.name==='air'?'empty':'block';b.getProperties=()=>({facing:'east',part:p.x===3?'head':'foot'});}return b;}) as any;
+  f.bot.registry.blocksByName={white_bed:{}} as any;f.bot.inventory.items=(()=>[{name:'white_bed',count,type:1}]) as any;
+  (f.bot as any).look=async(y:number)=>{yaw=y;};(f.bot as any)._placeBlockWithOptions=async(_b:any,_face:any,o:any)=>{assert.equal(o.forceLook,'ignore');calls++;count--;f.put(position,'white_bed');f.put(head,'white_bed');};
+  const p:Plan={goal:'bed',preferred:'place_block',build:{item:'white_bed',position,reference,facing:'east'}};
+  if(blocked){await assert.rejects(f.w.execute('place_block',signal(),p),/head cell occupied/);assert.equal(calls,0);}
+  else{assert.match(await f.w.execute('place_block',signal(),p),/Placed white_bed/);assert.equal(yaw,-Math.PI/2);assert.equal(calls,1);assert.equal(f.w.placementReceipt.confirmed,true);assert.deepEqual(f.w.placementReceipt.head,head);}
+ }
 });

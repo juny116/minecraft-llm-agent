@@ -1,9 +1,21 @@
+import {parseThreatResponse} from './threat-response.js';
 
+import {parseProcedure} from './procedure.js';
 import {actions,type Plan,type Snapshot,type WorkIntent} from './types.js';
 export function intentSatisfied(intent:WorkIntent|undefined,s:Snapshot){
  return !!intent?.desiredInventory.length&&intent.desiredInventory.every(target=>(s.inventory??[]).filter(i=>i.name===target.item).reduce((n,i)=>n+i.count,0)>=target.count);
 }
-export function parseIntent(raw:any,parseProposal:(raw:unknown)=>Plan):Plan{
+export function parseIntent(raw:any,parseProposal:(raw:unknown)=>Plan,allowProcedure=false):Plan{
+ // Lossless compatibility for an unambiguous field-placement mistake.
+ if(raw?.constraints!==undefined){
+  if(raw?.intent?.constraints!==undefined)throw Error('Invalid work intent: ambiguous root and intent constraints; return only intent.constraints');
+  raw={...raw,intent:{...raw.intent,constraints:raw.constraints}};delete raw.constraints;
+ }
+ // JSON null and an empty step list are how models write an omitted procedure: CONT4 had 8 procedure:null and
+ // 6 threatResponse:null repairs; in CONT5 all three steps:[] repairs failed in both repair passes.
+ const omitted=raw?.procedure==null||Array.isArray(raw.procedure.steps)&&!raw.procedure.steps.length;
+ if(!omitted&&!allowProcedure)throw Error('Invalid procedure: direct workflow does not execute procedures');
+ const procedure=omitted?undefined:parseProcedure(raw.procedure);
  const i=raw?.intent;
  for(const [field,value] of [['goal',raw?.goal],['intent.description',i?.description]] as const){
   if(typeof value==='string'&&value.length>400)throw Error(`Invalid work intent: ${field} length ${value.length} exceeds 400 characters; shorten this field while preserving the intended outcome`);
@@ -18,5 +30,6 @@ export function parseIntent(raw:any,parseProposal:(raw:unknown)=>Plan):Plan{
   if(p?.intent||p?.proposals||p?.steps?.length||['mine','move','idle','look'].includes(p?.preferred))throw Error('Invalid intent proposal: no recursive plan or mine/move targets');
   return parseProposal(p);
  });
- return {goal:raw.goal,preferred:'look',intent:structuredClone(i),proposals,steps:[]};
+ const threatResponse=raw.threatResponse==null?undefined:parseThreatResponse(raw.threatResponse);
+ return {...(procedure?{procedure}:{}),...(threatResponse?{threatResponse}:{}),goal:raw.goal,preferred:'look',intent:structuredClone({description:i.description,desiredInventory:i.desiredInventory,constraints:i.constraints}),proposals,steps:[]};
 }

@@ -18,6 +18,7 @@ async function main() {
   const c = config();
   if (mode !== '--mock' && (!c.llmKey || (c.mode === 'jev' && !c.jevKey)))
     throw new Error('Set LLM_API_KEY and (for jev mode) JEV_API_KEY in v2/.env');
+  if(mode==='--mock'&&c.workflowMode==='procedural')throw Error('Use pnpm procedure:mock for the v2.5 offline fixture, or WORKFLOW_MODE=direct for the legacy demo');
   const budget = new Budget(c.maxCalls, c.maxUsd);
   const brain = mode === '--mock' ? new LayeredMockBrain() : new ApiBrain(c, budget);
   if (mode === '--api-check') {
@@ -28,7 +29,7 @@ async function main() {
   }
   const dir = join('runs', new Date().toISOString().replace(/[:.]/g, '-') + `-${process.pid}`);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  writeFileSync(join(dir, 'config.json'), JSON.stringify({ agentTrack:'A',actionInterface:'skills-v2-container',observationInterface:'geometric-visible-v1',mode, names: c.names, decisionMode: c.mode,
+  writeFileSync(join(dir, 'config.json'), JSON.stringify({ workflowMode:c.workflowMode,agentTrack:'A',actionInterface:'skills-v2-container',observationInterface:'geometric-visible-v1',mode, names: c.names, decisionMode: c.mode,
     llmModel: c.llmModel, jevModel: c.jevModel, runSeconds: c.runSeconds,
     tickMs: c.tickMs, planMs: c.planMs, actionMs: c.actionMs,
     rates: { input: c.inputRate, output: c.outputRate, jev: c.jevRate },
@@ -45,7 +46,7 @@ async function main() {
     const experience=openBotMemory(mode,name,c);
     const world: World = mode === '--mock' ? new MockWorld(shared)
       : new (await import('./mineflayer.js')).MineflayerWorld(name, c, log);
-    const runtime = new Runtime(world, brain, { selectorMs:c.tickMs,longPlanMs:c.longPlanMs,reflectionMs:c.reflectionMs,socialMs:c.socialMs,recovery:new RecoveryMemory(join(botMemoryLocation(mode,name,c).dir,'recovery.json')),planMs: c.planMs, actionMs: c.actionMs, minConfidence: c.minConfidence, goals:new GoalBook(join(botMemoryLocation(mode,name,c).dir,'goals.json'),botMemoryLocation(mode,name,c).profile), social:new SocialMemory(name,join(botMemoryLocation(mode,name,c).dir,'social.json')),memory:experience,selectorKind:mode==='--mock'?'mock':c.mode }, log);
+    const runtime = new Runtime(world, brain, { workflowMode:c.workflowMode,selectorMs:c.tickMs,longPlanMs:c.longPlanMs,reflectionMs:c.reflectionMs,socialMs:c.socialMs,recovery:new RecoveryMemory(join(botMemoryLocation(mode,name,c).dir,'recovery.json')),planMs: c.planMs, actionMs: c.actionMs, minConfidence: c.minConfidence, goals:new GoalBook(join(botMemoryLocation(mode,name,c).dir,'goals.json'),botMemoryLocation(mode,name,c).profile), social:new SocialMemory(name,join(botMemoryLocation(mode,name,c).dir,'social.json')),memory:experience,selectorKind:mode==='--mock'?'mock':c.mode }, log);
     const memory = join('runs/memory', `${mode.slice(2)}-${name}.json`);
     if (existsSync(memory)) {
       try { const old = JSON.parse(readFileSync(memory, 'utf8')); runtime.history = Array.isArray(old) ? old.filter(x => typeof x === 'string').slice(-20) : []; }

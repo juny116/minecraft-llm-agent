@@ -5,8 +5,8 @@ test('JEV JSON encoding retains every coordinate, timestamp, guide, dialogue and
 });
 test('bounded branching preserves all 5000 argument values without selection ranking',async()=>{
  const values=Array.from({length:5000},(_,i)=>({x:i,y:64,z:0}));let calls=0;
- const v=await selectValue('destination',values,async(q,c)=>{calls++;const question=q.destination;assert.ok(Object.keys(question.criteria).length<=33);const wanted=4999;const k=Object.entries(question.criteria).find(([k,v])=>typeof v!=='string'&&(k.startsWith('group_')?v.values!.some((v:any)=>v.x===wanted):(v.value as any).x===wanted))![0];return {destination:{type:'choice',choice:k,confidence:0}};},{selectedAction:'move'});
- assert.equal(v.x,4999);assert.equal(calls,3);
+ const v=await selectValue('destination',values,async(q,c)=>{calls++;const question=q.destination;assert.ok(Object.keys(question.criteria).length<=33);const wanted=4999;const k=Object.entries(question.criteria).find(([k,v])=>typeof v!=='string'&&(k.startsWith('group_')?((v as any).summary ? (v as any).summary.bounds.x[0]<=wanted&&(v as any).summary.bounds.x[1]>=wanted : v.values!.some((v:any)=>v.x===wanted)):(v.value as any).x===wanted))![0];return {destination:{type:'choice',choice:k,confidence:0}};},{selectedAction:'move'});
+ assert.equal(v.x,4999);assert.equal(calls,4);
 });
 test('none remains a model choice even when the domain has feasible values',async()=>{await assert.rejects(selectValue('item',['bread','stone'],async()=>({item:{type:'choice',choice:'none',confidence:1}}),{selectedAction:'give'}),/No suitable item/);});
 

@@ -44,3 +44,17 @@ test('planner receives only unlocked recipes; fast selector receives no catalog'
  assert.deepEqual(JSON.parse(bodies[0].messages[1].content).state.recipeBook,world.state.recipeBook);
  assert.equal(bodies[1].state.observation.recipeBook,undefined);
 });
+
+
+test('declared output variants are exposed only when their own server recipe ID is unlocked',()=>{
+ const slot=(itemId:number)=>({itemId,itemCount:1});const book=new RecipeBook();
+ const shaped={name:'minecraft:white_bed',type:'minecraft:crafting_shaped',data:{gridWidth:3,gridHeight:2,ingredients:[[[slot(1)],[slot(1)],[slot(1)]],[[slot(2),slot(3)],[slot(2),slot(3)],[slot(2),slot(3)]]],result:{itemId:10,itemCount:1}}};
+ const recolor={name:'minecraft:white_bed_from_dye',type:'minecraft:crafting_shapeless',data:{ingredients:[[slot(11)],[slot(12)]],result:{itemId:10,itemCount:1}}};
+ const bed={result:{id:10,count:1},requiresTable:true,delta:[{id:1,count:-3},{id:2,count:-3},{id:10,count:1}]};
+ const dye={result:{id:10,count:1},requiresTable:false,delta:[{id:11,count:-1},{id:12,count:-1},{id:10,count:1}]};
+ book.declare({recipes:[shaped,recolor]});assert.equal(book.permits(bed),false);
+ book.apply({action:0,recipes1:['minecraft:white_bed']});assert.equal(book.permits(bed),true);assert.equal(book.permits(dye),false);
+ book.apply({action:1,recipes1:['minecraft:white_bed_from_dye']});assert.equal(book.permits(dye),true);
+ book.apply({action:2,recipes1:['minecraft:white_bed']});assert.equal(book.permits(bed),false);
+ book.reset();assert.equal(book.permits(dye),false);assert.deepEqual(book.snapshot(),{initialized:false,unlocked:[]});
+});

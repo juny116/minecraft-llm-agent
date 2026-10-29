@@ -51,8 +51,8 @@ test('structured mining result is retained in the runtime journal separately fro
  const r=new Runtime(w,{plan:async()=>({goal:'wood',preferred:'mine',mine:target}),choose:async()=>({action:'mine',confidence:1})},{planMs:60000,actionMs:1000,minConfidence:0},()=>{});
  await r.tick();await r.tick();assert.equal(r.planning.recentActions.at(-1)?.mining?.blockBroken,true);assert.equal(r.planning.recentActions.at(-1)?.changes.inventory.oak_log,1);r.close();
 });
-test('pickup approaches the actual drop cell rather than stopping one block short',async()=>{
- const f=setup();f.bot.dig=async()=>{f.breakBlock();f.drop();};f.w.navigate=async(g:any)=>{assert.equal(g.rangeSq,0);f.receive();};
+test('pickup approaches a standing cell within item reach',async()=>{
+ const f=setup();f.bot.dig=async()=>{f.breakBlock();f.drop();};f.w.navigate=async(g:any)=>{assert.equal(g.isEnd({x:1,y:g.y,z:0}),true);assert.equal(g.isEnd({x:2,y:g.y+2,z:0}),false);f.receive();};
  const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.inventoryGained[0].count,1);
 });
 
@@ -60,7 +60,7 @@ test('confirmed destruction invalidates previously observed storage at that cell
 
 
 test('pickup uses visible drop elevation rather than the current feet height',async()=>{
- const f=setup();f.bot.dig=async()=>{f.breakBlock();f.drop();f.bot.entities['42'].position=new V(2,1,0);};f.w.navigate=async(g:any)=>{assert.equal(g.y,1);assert.equal(g.rangeSq,0);f.receive();};
+ const f=setup();f.bot.dig=async()=>{f.breakBlock();f.drop();f.bot.entities['42'].position=new V(2,1,0);};f.w.navigate=async(g:any)=>{assert.equal(g.y,1);assert.equal(g.isEnd({x:1,y:g.y,z:0}),true);assert.equal(g.isEnd({x:2,y:g.y+2,z:0}),false);f.receive();};
  const r=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(r.inventoryGained[0].count,1);
 });
 
@@ -116,4 +116,21 @@ test('drop appearing after the first post-break scan is collected inside the sam
  const f=setup();let timer:ReturnType<typeof setTimeout>|undefined;
  f.bot.dig=async()=>{f.breakBlock();timer=setTimeout(()=>f.drop(),350);};f.w.navigate=async()=>f.receive();
  try{const result=JSON.parse(await f.w.execute('mine',signal(),p));assert.equal(result.blockBroken,true);assert.equal(result.dropObservation,'observed_near_target');assert.deepEqual(result.inventoryGained,[{name:'cobblestone',count:1}]);}finally{clearTimeout(timer);}
+});
+test('a tool that cannot harvest the block is reported from block data with the tools that can',async()=>{
+ const f=setup();const target=f.bot.blockAt();Object.assign(target,{harvestTools:{801:true,806:true},canHarvest:(id:number|null)=>id===801||id===806});
+ Object.assign(f.bot,{heldItem:{name:'iron_sword',type:900,enchants:[],durabilityUsed:0},registry:{items:{801:{name:'wooden_pickaxe'},806:{name:'stone_pickaxe'}}}});
+ const r=JSON.parse(await f.w.execute('mine',signal(),p));
+ assert.equal(r.harvest.heldToolDropsItem,false);assert.deepEqual(r.harvest.toolsThatDropItem,['wooden_pickaxe','stone_pickaxe']);
+ assert.equal(classify('mine',JSON.stringify(r)),'partial');
+});
+test('an empty hand or non-tool that cannot harvest is reported as false, not dropped from the record',async()=>{
+ for(const held of [null,{name:'stick',type:900,enchants:[],durabilityUsed:null}]){
+  const f=setup();const target=f.bot.blockAt();
+  // prismarine-block returns null for no held item and undefined for an item outside harvestTools.
+  Object.assign(target,{harvestTools:{801:true},canHarvest:(id:number|null)=>id&&({801:true} as any)[id]});
+  Object.assign(f.bot,{heldItem:held,registry:{items:{801:{name:'wooden_pickaxe'}}}});
+  const r=JSON.parse(await f.w.execute('mine',signal(),p));
+  assert.equal(r.harvest.heldToolDropsItem,false);assert.equal(classify('mine',JSON.stringify(r)),'partial');
+ }
 });

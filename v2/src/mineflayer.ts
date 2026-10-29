@@ -1,27 +1,40 @@
+import {craftingState,feasibleExecutions,recipeBatchAvailable} from './crafting-state.js';
+import {settleCraftInventory} from './craft-settlement.js';
+import {DropMemory} from './pickup.js';
+import {recipeFact,type RecipeFact} from './procedure.js';
 import {NavigationFailure,navigationEvidence} from './execution-evidence.js';
 import {MOVE_RADIUS,moveReached,MINE_APPROACH_RADIUS,MINE_SIGHT_APPROACH_RADIUS,MINE_PICKUP_MS} from './action-contracts.js';
 import {ImportantPlaces} from './important-places.js';
 import {localNavigationTargets} from './navigation.js';
 import {tableSupportMaterial} from './building.js';
-import {knownDestination} from './types.js';
+import {knownDestination,referencedDestination} from './types.js';
 import {RecoveryMemory} from './recovery.js';
 import {craftFailure} from './craft-feedback.js';
-import {observedMovements} from './navigation.js';
+import {observedMovements,PickupGoal} from './navigation.js';
 import {SpatialMemory} from './spatial-memory.js';
 import {botMemoryLocation} from './experience-memory.js';
 import {join} from 'node:path';
+import {existsSync,readFileSync,writeFileSync,mkdirSync} from 'node:fs';
+import {dirname} from 'node:path';
+import {RESPAWN_SET_RESULT} from './beds.js';
 import {executeEquip} from './equipment.js';
 import {validatePickup,type PickupResult} from './pickup.js';
 import {miningResult,inventoryGains,miningTiming} from './mining.js';
+import {fastRaycast} from './fast-raycast.js';
+import {escapeMovements} from './navigation.js';
+import {dayTime} from './day-time.js';
+import {weaponRank} from './combat.js';
 import {buildingMaterial,validateBuild,validateDig,sameCell,overlapsCell,supportsFeet} from './building.js';
 import {randomUUID} from 'node:crypto';
 import {IncomingDamage} from './incoming-damage.js';
 import {CombatEvidenceStore} from './combat-evidence.js';
-import { combat, hostileKinds, distance, type Enemy, type Encounter } from './combat.js';
-import { PlaceMemory, sampleView, sampleSurroundings, summarizePlaces, viewDirection, visibleBlockFace, VISION } from './vision.js';
+import {isBed,bedHead,bedYaw} from './beds.js';
+import { combat,combatCooldownMs, animalKinds, hostileKinds, distance, type Enemy, type Encounter } from './combat.js';
+import { PlaceMemory, sampleView, sampleNearSurfaces, sampleSurroundings, summarizePlaces, viewDirection, visibleBlockFace, VISION } from './vision.js';
 import { RecipeBook } from "./recipe-book.js";
 import { protocolOverrides } from "./protocol.js";
 import mineflayer from 'mineflayer';
+import {fixRecipeTypeMapping} from './protocol-fixes.js';
 import pathfinderPackage from 'mineflayer-pathfinder';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Config } from './config.js';
@@ -29,6 +42,10 @@ import type { Action, Log, Snapshot, World, Plan } from './types.js';
 
 const { pathfinder, goals } = pathfinderPackage;
 function samePosition(a:{x:number;y:number;z:number},b:{x:number;y:number;z:number}){return a.x===b.x&&a.y===b.y&&a.z===b.z;}
+// Cells a placed block may fill: empty, or plants that vanilla replaces on placement.
+const replaceable=(name?:string)=>!!name&&/^(air|cave_air|short_grass|tall_grass|fern|large_fern)$/.test(name);
+// Server messages for a refused bed use; texts follow the vanilla English strings.
+const BED_REFUSALS:Record<string,string>={'block.minecraft.bed.obstructed':'this bed is obstructed (the cells above the bed must be free)','block.minecraft.bed.not_safe':'you may not rest now; there are monsters nearby','block.minecraft.bed.too_far_away':'you may not rest now; the bed is too far away','block.minecraft.bed.no_sleep':'you can sleep only at night or during thunderstorms','block.minecraft.bed.occupied':'this bed is occupied'};
 export class MineflayerWorld implements World {
   private spatial?:SpatialMemory;
  readonly importantPlaces:ImportantPlaces;
@@ -36,6 +53,7 @@ export class MineflayerWorld implements World {
   private recovery:RecoveryMemory;private generation=0;private deathCount=0;private dead=false;
   private bot: mineflayer.Bot;
   private ready = false;
+  private dropMemory=new DropMemory();
   private recipeBook = new RecipeBook();
   private memory = new PlaceMemory();
   private visible: import('./vision.js').SeenBlock[] = [];
@@ -60,16 +78,18 @@ export class MineflayerWorld implements World {
   private encounters: Encounter[] = [];
   private messages: string[] = [];
   private chatEvents:import('./social.js').ChatEvent[]=[];
-  constructor(name: string, private c: Config, log: Log) {
-    const location=botMemoryLocation('--live',name,c);this.importantPlaces=new ImportantPlaces(join(location.dir,'important-places.json'),location.profile);this.spatial=new SpatialMemory(join(location.dir,'spatial.json'),location.profile);this.recovery=new RecoveryMemory(join(location.dir,'recovery.json'));
+  constructor(name: string, private c: Config, private log: Log) {
+    const location=botMemoryLocation('--live',name,c);this.importantPlaces=new ImportantPlaces(join(location.dir,'important-places.json'),location.profile);this.spatial=new SpatialMemory(join(location.dir,'spatial.json'),location.profile);this.recovery=new RecoveryMemory(join(location.dir,'recovery.json'));this.respawnFile=join(location.dir,'respawn.json');try{this.respawnBed=existsSync(this.respawnFile)?JSON.parse(readFileSync(this.respawnFile,'utf8')):undefined;}catch{this.respawnBed=undefined;}
+    fixRecipeTypeMapping(c.version);
     this.bot = mineflayer.createBot({ host: c.host, port: c.port, version: c.version,
       customPackets: protocolOverrides(c.version),
       username: name, auth: c.auth, respawn:true, profilesFolder: './runs/auth' });
     this.bot.loadPlugin(pathfinder);
     // The full declare_recipes catalog is intentionally never added to observations.
+    this.bot._client.on('declare_recipes', packet => {this.recipeBook.declare(packet);this.log('recipe_catalog',{recipes:this.recipeBook.catalogSize});});
     this.bot._client.on('unlock_recipes', packet => this.recipeBook.apply(packet));
     this.bot.on('spawn', () => {
-      this.generation++;this.dead=false;this.lastAlivePossessions=undefined;this.memory.clear();this.knownCacheAt=-1;this.knownCache=[];this.navigationHints=[];this.navigationHintsAt=0;this.visible=[];this.containers=[];this.combatEvidence.clear();this.incomingDamage.clear();
+      this.dropMemory.clear();this.generation++;this.dead=false;this.lastAlivePossessions=undefined;this.memory.clear();this.knownCacheAt=-1;this.knownCache=[];this.navigationHints=[];this.navigationHintsAt=0;this.visible=[];this.containers=[];this.combatEvidence.clear();this.incomingDamage.clear();
       const movement = observedMovements(this.bot,this.memory);
       this.bot.pathfinder.setMovements(movement); this.ready = true;
       this.recovery.respawn(this.snapshot());log('spawn',{generation:this.generation});
@@ -85,9 +105,14 @@ export class MineflayerWorld implements World {
       const entity=this.bot.entities[packet.entityId];
       if(entity)this.combatEvidence.hurt(entity.id,packet.sourceCauseId===this.bot.entity?.id+1,this.entityVisible(entity),Date.now());
     });
+    // Observation is skipped while nothing it depends on changed; block changes in range and new chunks mark it stale.
+    this.bot.on('blockUpdate',(_old,next)=>{const e=this.bot.entity;if(next&&e&&next.position.distanceTo(e.position)<=50)this.observeStale=true;});
+    this.bot.on('chunkColumnLoad',()=>{this.observeStale=true;});
+    this.bot.on('playerCollect',(collector,collected)=>{if(collector.id===this.bot.entity?.id)this.dropMemory.forget(collected.id);});
     this.bot.on('entityDead',entity=>{if(entity&&this.entityVisible(entity))this.combatEvidence.death(entity.id,Date.now());});
     this.bot.on('death', () => { const death=this.recovery.death(this.snapshot(),this.lastAlivePossessions);this.deathCount++;this.dead=true;this.ready=false;this.stop();log('death',{death}); });
     this.bot.on('end', () => { this.saveSpatial(true); this.ready = false; this.recipeBook.reset(); this.memory.clear();this.knownCacheAt=-1;this.knownCache=[];this.navigationHints=[];this.navigationHintsAt=0; this.containers=[]; this.visible=[]; this.combatEvidence.clear();this.incomingDamage.clear(); log('disconnected'); });
+    this.bot.on('message',(m:unknown)=>{const key=(m as {translate?:string}|null)?.translate;if(key==='block.minecraft.spawn.not_valid'&&this.respawnBed){log('respawn_bed_lost',{bed:this.respawnBed.position});this.setRespawnBed(undefined);}});
     this.bot.on('kicked', () => { this.ready = false; log('kicked'); });
     this.bot.on('error', () => log('connection_error')); // no raw credentials/packets
     this.bot.on('chat', (sender, message) => {
@@ -97,18 +122,19 @@ export class MineflayerWorld implements World {
       this.messages = this.messages.slice(-6);
     });
   }
-  private visibleItems(){return Object.values(this.bot.entities).filter(e=>e.name==='item'&&this.entityVisible(e)).flatMap(e=>{const i=e.getDroppedItem();return i?[{id:e.id,name:i.name,count:i.count,position:{x:e.position.x,y:e.position.y,z:e.position.z}}]:[];});}
+  private visibleItems(){const visible=Object.values(this.bot.entities).filter(e=>e.name==='item'&&this.entityVisible(e)).flatMap(e=>{const i=e.getDroppedItem();return i?[{id:e.id,name:i.name,count:i.count,position:{x:e.position.x,y:e.position.y,z:e.position.z}}]:[];});(this.dropMemory??=new DropMemory()).observe(visible);return visible;}
   // Shared by standalone pickup and mine's bounded post-break collection.
   private async collectVisibleDrop(id:number,signal:AbortSignal,modelSelected=false){
     signal.throwIfAborted();const e=this.bot.entities[id];
     if(!e||e.name!=='item'||!this.entityVisible(e))throw Error('Dropped item no longer visible');
     if(!modelSelected&&this.enemies().length)throw Error('Visible danger prevents pickup');
-    const p=e.position.clone?e.position.clone():e.position;
+    const p=e.position.offset(0,0,0);
     await this.bot.lookAt(p.offset(0,.05,0),false);this.observe(true);signal.throwIfAborted();
     let abort=()=>{};let rejectDanger:(error:Error)=>void=()=>{};
     const interrupted=new Promise<never>((_,reject)=>{rejectDanger=reject;abort=()=>{this.stop();reject(signal.reason);};signal.addEventListener('abort',abort,{once:true});});
-    const monitor=setInterval(()=>{const target=this.bot.entities[id];if(!target||!this.entityVisible(target)){this.stop();rejectDanger(new Error('Pickup target lost; inventory must confirm receipt'));return;}if(!modelSelected&&this.enemies().length){this.stop();rejectDanger(new Error('Visible danger interrupted pickup'));}},50);
-    try{await Promise.race([this.navigate(new goals.GoalNear(Math.floor(p.x),Math.floor(p.y),Math.floor(p.z),0),signal),interrupted]);}
+    const monitor=setInterval(()=>{// Occlusion does not invalidate the frozen last-seen destination.
+      if(!modelSelected&&this.enemies().length){this.stop();rejectDanger(new Error('Visible danger interrupted pickup'));}},50);
+    try{await Promise.race([this.navigate(new PickupGoal({x:p.x,y:p.y,z:p.z}),signal),interrupted]);}
     finally{clearInterval(monitor);signal.removeEventListener('abort',abort);this.stop();}
   }
   private async pickupItem(signal:AbortSignal,plan?:Plan){
@@ -119,12 +145,25 @@ export class MineflayerWorld implements World {
     this.bot.on('health',onHealth);const active=AbortSignal.any([signal,damage.signal,AbortSignal.timeout(8000)]);
     try{
       validatePickup(plan?.pickup!);const request=plan!.pickup!;
-      if(!this.visibleItems().some(i=>i.id===request.entityId&&i.name===request.expected))throw Error('Pickup target changed or not visible');
+      const visible=this.visibleItems();
+      const seen=visible.find(i=>i.id===request.entityId&&i.name===request.expected);
+      const remembered=this.dropMemory.remembered(visible).find(i=>i.id===request.entityId&&i.name===request.expected);
+      if(!seen&&!remembered)throw Error('Pickup target has no recent observation');
+      if(!seen&&remembered){
+        this.phase('approach','Reapproaching last observed drop position; current existence and position unknown.');
+        await this.navigate(new PickupGoal(remembered.position),active);this.observe(true);
+        if(!this.visibleItems().some(i=>i.id===request.entityId&&i.name===request.expected)){
+          this.dropMemory.forget(request.entityId);
+          if((totals()[request.expected]??0)>(before[request.expected]??0)){result.status='finished';return JSON.stringify({...result,inventoryGained:inventoryGains(before,totals()),elapsedMs:Date.now()-started});}
+          throw Error('Drop not reobserved at last seen position; existence unknown');
+        }
+      }
       await this.collectVisibleDrop(request.entityId,active,plan?.modelSelected);
       await delay(450,undefined,{signal:active});result.status='finished';
-    }catch(error){result.status=active.aborted?'cancelled':'failed';result.detail=error instanceof Error?error.message.slice(0,180):'Pickup failed';}
+    }catch(error){result.status=active.aborted?'cancelled':'failed';result.detail=error instanceof Error?error.message.slice(0,180):'Pickup failed';if(error instanceof NavigationFailure)Object.assign(result,{navigation:error.evidence});}
     finally{this.stop();this.bot.removeListener('health',onHealth);result.inventoryGained=inventoryGains(before,totals());result.elapsedMs=Date.now()-started;}
     if(!signal.aborted&&result.detail?.startsWith('Pickup target lost')&&result.inventoryGained.some(i=>i.name===result.target?.expected&&i.count>0)){result.status='finished';result.detail='Target lost and matching inventory gain observed; origin remains unconfirmed';}
+    if(result.inventoryGained.some(i=>i.name===result.target?.expected&&i.count>0))this.dropMemory.forget(result.target!.entityId);
     if(result.status==='finished'&&!result.inventoryGained.some(i=>i.name===result.target?.expected&&i.count>0)){result.status='failed';result.detail='No matching inventory gain observed; disappearance is not receipt';}
     return JSON.stringify(result);
   }
@@ -134,8 +173,8 @@ export class MineflayerWorld implements World {
   private phase(value:import('./types.js').MotorProgress['phase'],meaning:string){this.motor={phase:value,at:Date.now(),blockBroken:false,phaseMeaning:meaning};}
   private placementReceipt?:Record<string,unknown>;
   executionReceipt(){return this.placementReceipt||this.actionReceipt?structuredClone({...this.placementReceipt,...(this.actionReceipt?{actionEvidence:this.actionReceipt}:{})}):undefined;}
-  private motor?:{placementRequestIssued?:boolean;phaseMeaning?:string;phase:import('./types.js').MotorProgress['phase'];at:number;estimatedDigMs?:number;digBudgetMs?:number;estimateCapped?:boolean;blockBroken:boolean};
-  executionProgress():import('./types.js').MotorProgress|undefined{return this.motor?{phase:this.motor.phase,placementRequestIssued:this.motor.placementRequestIssued,phaseMeaning:this.motor.phaseMeaning,phaseElapsedMs:Math.max(0,Date.now()-this.motor.at),estimatedDigMs:this.motor.estimatedDigMs,digBudgetMs:this.motor.digBudgetMs,estimateCapped:this.motor.estimateCapped,estimatedRemainingMs:this.motor.phase==='digging'&&this.motor.estimatedDigMs!==undefined?Math.max(0,this.motor.estimatedDigMs-(Date.now()-this.motor.at)):undefined,blockBroken:this.motor.blockBroken}:undefined;}
+  private motor?:{combat?:import('./combat.js').CombatProgress;placementRequestIssued?:boolean;phaseMeaning?:string;phase:import('./types.js').MotorProgress['phase'];at:number;estimatedDigMs?:number;digBudgetMs?:number;estimateCapped?:boolean;blockBroken:boolean};
+  executionProgress():import('./types.js').MotorProgress|undefined{return this.motor?{combat:this.motor.combat?structuredClone(this.motor.combat):undefined,phase:this.motor.phase,placementRequestIssued:this.motor.placementRequestIssued,phaseMeaning:this.motor.phaseMeaning,phaseElapsedMs:Math.max(0,Date.now()-this.motor.at),estimatedDigMs:this.motor.estimatedDigMs,digBudgetMs:this.motor.digBudgetMs,estimateCapped:this.motor.estimateCapped,estimatedRemainingMs:this.motor.phase==='digging'&&this.motor.estimatedDigMs!==undefined?Math.max(0,this.motor.estimatedDigMs-(Date.now()-this.motor.at)):undefined,blockBroken:this.motor.blockBroken}:undefined;}
   private async mineBlock(signal:AbortSignal,plan?:Plan){
     const result=miningResult(plan?.mine??null),started=Date.now();this.motor={phase:'approach',at:started,blockBroken:false};
     const totals=()=>{const out:Record<string,number>={};for(const i of this.bot.inventory.items())out[i.name]=(out[i.name]??0)+i.count;return out;};
@@ -147,6 +186,7 @@ export class MineflayerWorld implements World {
     const active=AbortSignal.any([signal,damage.signal]);
     const abort=()=>this.stop();active.addEventListener('abort',abort,{once:true});
     const scan=()=>{
+      this.visibleItems();
       if(!plan?.mine)return [];
       const p=plan.mine.position;
       const drops=Object.values(this.bot.entities).filter(e=>e.name==='item'&&!initialIds.has(String(e.id))&&Math.hypot(e.position.x-p.x,e.position.y-p.y,e.position.z-p.z)<4&&this.entityVisible(e));
@@ -176,6 +216,11 @@ export class MineflayerWorld implements World {
       try{if(tool)await this.bot.equip(tool,'hand');}finally{this.bot.clickWindow=original;}
       active.throwIfAborted();target=fresh();const held=this.bot.heldItem;
       result.tool=held?{name:held.name,enchants:structuredClone(held.enchants??[]),durabilityUsed:held.durabilityUsed}:null;
+      // Game data, not inference: blocks such as stone and ores drop nothing unless broken with a listed tool.
+      // canHarvest returns null/undefined for a hand or non-tool, which JSON dropped: in CONT5 Bob broke stone 20+
+      // times with a stick after his pickaxe broke, every record reading succeeded without heldToolDropsItem.
+      const harvestIds=Object.keys((target as unknown as {harvestTools?:Record<string,boolean>}).harvestTools??{});
+      if(typeof target.canHarvest==='function')result.harvest={heldToolDropsItem:!!target.canHarvest(held?.type??null),toolsThatDropItem:harvestIds.length?harvestIds.map(id=>this.bot.registry.items[Number(id)]?.name).filter((n):n is string=>!!n):null,meaning:'From game block data. heldToolDropsItem=false means breaking this block with the held tool yields no item; one of toolsThatDropItem is required. toolsThatDropItem=null means any tool or bare hand drops it.'};
       this.bot.on('itemDrop',onDrop);digStarted=Date.now();const timing=miningTiming(this.bot.digTime?.(target));Object.assign(result,timing);this.motor={phase:'digging',at:digStarted,...timing,blockBroken:false};
       const clock=new AbortController(),timer=setTimeout(()=>clock.abort(new DOMException('Mining attempt budget exhausted','TimeoutError')),timing.digBudgetMs),timeout=clock.signal,digSignal=AbortSignal.any([active,timeout]);
       let stopDig:()=>void=()=>{};
@@ -198,10 +243,10 @@ export class MineflayerWorld implements World {
           await this.collectVisibleDrop(drops[0].id,pickupSignal,plan?.modelSelected);
           await delay(250,undefined,{signal:pickupSignal});scan();
         }
-      }catch(error){result.pickup='interrupted';result.detail=error instanceof Error?error.message.slice(0,180):'Pickup interrupted';}finally{pickupSignal.removeEventListener('abort',stopPickup);this.stop();}
+      }catch(error){if(error instanceof NavigationFailure)Object.assign(result,{navigation:error.evidence});result.pickup='interrupted';result.detail=error instanceof Error?error.message.slice(0,180):'Pickup interrupted';}finally{pickupSignal.removeEventListener('abort',stopPickup);this.stop();}
       await delay(200,undefined,{signal:active});scan();
       active.throwIfAborted();result.status='finished';
-    }catch(error){result.status=active.aborted?'cancelled':result.status==='time_limit'?'time_limit':'failed';result.detail=error instanceof Error?error.message.slice(0,200):'Mining failed';}
+    }catch(error){if(error instanceof NavigationFailure)Object.assign(result,{navigation:error.evidence});result.status=active.aborted?'cancelled':result.status==='time_limit'?'time_limit':'failed';result.detail=error instanceof Error?error.message.slice(0,200):'Mining failed';}
     finally{
       this.bot.removeListener('itemDrop',onDrop);this.bot.removeListener('health',onHealth);active.removeEventListener('abort',abort);
       result.attemptMs=digStarted===undefined?0:(digEnded??Date.now())-digStarted;result.elapsedMs=Date.now()-started;
@@ -210,17 +255,39 @@ export class MineflayerWorld implements World {
     return JSON.stringify(result);
   }
 
+  // Nearest standable cell (free feet and head, solid floor) that keeps the body out of the given cells and stays
+  // within placement reach of the reference block.
+  private stepAsideSpot(avoid:import('./vision.js').Position[],reference:import('./vision.js').Position){
+    const here=this.bot.entity.position,base=here.floored(),spots:{x:number;y:number;z:number;d:number}[]=[];
+    const at=(x:number,y:number,z:number)=>this.bot.blockAt(base.scaled(0).offset(x,y,z));
+    for(let dx=-3;dx<=3;dx++)for(let dy=-1;dy<=1;dy++)for(let dz=-3;dz<=3;dz++){
+      const x=base.x+dx,y=base.y+dy,z=base.z+dz,feet={x:x+.5,y,z:z+.5};
+      if(at(x,y,z)?.boundingBox!=='empty'||at(x,y+1,z)?.boundingBox!=='empty'||at(x,y-1,z)?.boundingBox!=='block')continue;
+      if(avoid.some(c=>overlapsCell(c,feet)))continue;
+      if(Math.hypot(x+.5-(reference.x+.5),y+1.62-(reference.y+.5),z+.5-(reference.z+.5))>4)continue;
+      spots.push({x,y,z,d:Math.hypot(feet.x-here.x,feet.y-here.y,feet.z-here.z)});
+    }
+    return spots.sort((a,b)=>a.d-b.d)[0];
+  }
+  // Blocks this bot placed and still observes in place; mining options keep them out of the default per-type pick.
+  // Bed the server confirmed as respawn point (block.minecraft.set_spawn), kept across processes; cleared when the
+  // server reports it missing on respawn.
+  private respawnBed?:{position:import('./vision.js').Position;dimension:string;at:number};private respawnFile?:string;
+  private setRespawnBed(b:MineflayerWorld['respawnBed']){this.respawnBed=b;if(!this.respawnFile)return;try{mkdirSync(dirname(this.respawnFile),{recursive:true,mode:0o700});writeFileSync(this.respawnFile,JSON.stringify(b??null),{mode:0o600});}catch{}}
+  private ownPlaced=new Map<string,{name:string;position:import('./vision.js').Position;at:number}>();
   private async buildAction(action:'place_block',signal:AbortSignal,plan?:Plan){
     validateBuild(plan?.build!);
     const build=plan!.build!,cell=build.reference;
+    const head=isBed(build.item)?bedHead(build.position,build.facing!):undefined;
     const initialCount=this.itemCount(build.item);let issued=false;
     const phase=(value:import('./types.js').MotorProgress['phase'],meaning:string)=>{this.motor={phase:value,at:Date.now(),blockBroken:false,placementRequestIssued:issued,phaseMeaning:meaning};};
     phase('approach','Approaching the selected support; no placement request issued.');
     try{
-    const observed=this.visible.find(b=>sameCell(b.position,cell))??this.knownPlaces().find(b=>sameCell(b.position,cell));
+    const eye=this.bot.entity.position.offset(0,1.62,0);
+    if(Math.hypot(build.position.x+.5-eye.x,build.position.y+.5-eye.y,build.position.z+.5-eye.z)>12)throw Error('Placement outside local 12-block scope; move and observe first');
+    const observed=this.visible.find(b=>sameCell(b.position,cell));
     if(!observed)throw Error('Block target not currently observed');
     const vec=this.bot.entity.position.scaled(0).offset(cell.x,cell.y,cell.z);
-    if(!this.visible.some(b=>sameCell(b.position,cell))) {await this.navigate(new goals.GoalNear(cell.x,cell.y,cell.z,3),signal);this.observe(true);if(!this.visible.some(b=>sameCell(b.position,cell)))throw Error('Remembered support not observable after approach');}
     let block=this.bot.blockAt(vec);
     if(!block||block.name!==observed.name)throw Error('Block target changed');
     const stateId=block.stateId;
@@ -230,10 +297,25 @@ export class MineflayerWorld implements World {
     block=fresh();
     const target=vec.scaled(0).offset(build.position.x,build.position.y,build.position.z),face=target.minus(vec);
     const free=()=>{
-      if(this.bot.blockAt(target)?.name!=='air')throw Error('Block placement target occupied');
+      if(!replaceable(this.bot.blockAt(target)?.name))throw Error('Block placement target occupied');
+      if(head){
+        const support={...head,y:head.y-1},sv=target.scaled(0).offset(support.x,support.y,support.z),hv=sv.offset(0,1,0);
+        if(!this.visible.some(b=>sameCell(b.position,support))||this.bot.blockAt(sv)?.boundingBox!=='block')throw Error('Bed head floor not currently observed and solid');
+        if(this.bot.blockAt(hv)?.name!=='air')throw Error('Bed head cell occupied');
+      }
       const entities=[this.bot.entity,...Object.values(this.bot.entities)];
-      if(entities.some(e=>overlapsCell(build.position,e.position,e.width??.6,e.height??1.8)))throw Error('Block placement overlaps entity');
+      if(entities.some(e=>[build.position,...(head?[head]:[])].some(c=>overlapsCell(c,e.position,e.width??.6,e.height??1.8))))throw Error('Block placement overlaps entity');
     };
+    // Standing in the cell to fill is a local positioning problem, not a model choice: step to a nearby free
+    // standing cell that still reaches the reference block, then place (FREE3: three own-body overlaps).
+    const cellsToFill=[build.position,...(head?[head]:[])];
+    if(cellsToFill.some(c=>overlapsCell(c,this.bot.entity.position))){
+      phase('approach','Own body occupies the placement cell; stepping aside before placing.');
+      const spot=this.stepAsideSpot(cellsToFill,cell);
+      if(!spot)throw Error('Own body occupies the placement cell and no free standing cell within reach was found');
+      await this.navigate(new goals.GoalNear(spot.x,spot.y,spot.z,0),signal);signal.throwIfAborted();
+      block=fresh();
+    }
     const item=this.bot.inventory.items().find(i=>i.name===build.item);
     if(!item||!this.bot.registry.blocksByName[build.item])throw Error('Block material unavailable');
     free();const before=this.itemCount(build.item);
@@ -247,19 +329,23 @@ export class MineflayerWorld implements World {
       if(length>4.5)throw Error('Selected placement face remains outside reach after approach');
       if(length<.05||this.bot.world.raycast(eye,delta.scaled(1/length),length-.02))throw Error('Selected placement face occluded after approach');
       block=fresh();free();signal.throwIfAborted();this.bot.setControlState('sneak',true);
-      issued=true;phase('placing','Placement operation requested; server effect may occur even if cancelled.');await this.bot.placeBlock(block,face);phase('confirming','Checking block and inventory evidence; cancellation cannot undo a server placement.');signal.throwIfAborted();
+      if(head){await this.bot.look(bedYaw(build.facing!),0,true);await this.bot.waitForTicks(2);signal.throwIfAborted();free();}
+      issued=true;phase('placing','Placement operation requested; server effect may occur even if cancelled.');if(head)await (this.bot as any)._placeBlockWithOptions(block,face,{forceLook:'ignore',swingArm:'right'});else await this.bot.placeBlock(block,face);phase('confirming','Checking block and inventory evidence; cancellation cannot undo a server placement.');signal.throwIfAborted();
       for(let i=0;i<20&&(this.bot.blockAt(target)?.name!==build.item||this.itemCount(build.item)!==before-1);i++)await delay(50,undefined,{signal});
       if(this.bot.blockAt(target)?.name!==build.item||this.itemCount(build.item)!==before-1)throw Error('Block placement not confirmed');
-      this.memory.observe([{name:build.item,position:{...build.position},lastSeen:Date.now()}]);this.observe(true);
+      if(head){const hb=this.bot.blockAt(target.scaled(0).offset(head.x,head.y,head.z)),fb=this.bot.blockAt(target);if(hb?.name!==build.item||hb.getProperties().part!=='head'||fb?.getProperties().part!=='foot'||fb.getProperties().facing!==build.facing)throw Error('Bed footprint or facing not confirmed');}
+      this.memory.observe([build.position,...head?[head]:[]].map(position=>({name:build.item,position:{...position},lastSeen:Date.now()})));this.observe(true);
       return `Placed ${build.item} at ${target.x},${target.y},${target.z}`;
     }finally{this.bot.clickWindow=original;this.bot.setControlState('sneak',signal.aborted?false:sneaking);}
     }finally{
       // Observe effects of an already-issued operation, without sending another action.
       if(issued&&signal.aborted)await delay(200);
       const target=this.bot.entity.position.scaled(0).offset(build.position.x,build.position.y,build.position.z);
-      const matched=issued&&this.bot.blockAt(target)?.name===build.item,consumed=initialCount-this.itemCount(build.item);
-      this.placementReceipt={kind:'placement',requestIssued:issued,cancelRequested:signal.aborted,blockMatched:matched,itemDelta:consumed===0?0:-consumed,confirmed:matched&&consumed===1,position:{...build.position},item:build.item,observedAt:Date.now(),meaning:'Execution cancellation and world effect are separate. No request means no placement attempted; absent confirmation does not prove no delayed effect.'};
+      const matched=issued&&this.bot.blockAt(target)?.name===build.item&&(!head||(this.bot.blockAt(target.scaled(0).offset(head.x,head.y,head.z))?.name===build.item&&this.bot.blockAt(target)?.getProperties().facing===build.facing)),consumed=initialCount-this.itemCount(build.item);
+      const placedFoot=this.bot.blockAt(target),placed=placedFoot?.name===build.item?{position:{...build.position},...(head&&placedFoot.getProperties().facing?{facing:placedFoot.getProperties().facing,head:bedHead(build.position,placedFoot.getProperties().facing as any)}:{})}:null;
+      this.placementReceipt={kind:'placement',requestIssued:issued,cancelRequested:signal.aborted,blockMatched:matched,itemDelta:consumed===0?0:-consumed,confirmed:matched&&consumed===1,position:{...build.position},...(head?{head,facing:build.facing}:{}),observedPlacement:placed,item:build.item,observedAt:Date.now(),meaning:'Execution cancellation and world effect are separate. No request means no placement attempted; absent confirmation does not prove no delayed effect.'};
       if(matched)this.memory.observe([{name:build.item,position:{...build.position},lastSeen:Date.now()}]);
+      if(matched){(this.ownPlaced??=new Map()).set(`${build.position.x},${build.position.y},${build.position.z}`,{name:build.item,position:{...build.position},at:Date.now()});while(this.ownPlaced.size>128)this.ownPlaced.delete(this.ownPlaced.keys().next().value!);}
       this.motor=undefined;
     }
   }
@@ -335,10 +421,11 @@ export class MineflayerWorld implements World {
       const point={x:e.position.x,y:e.position.y,z:e.position.z},update=new AbortController();let moved=false;
       this.phase('tracking','Approaching the selected visible player; recheck visibility and target movement.');
       const monitor=setInterval(()=>{const now=this.bot.players[name]?.entity;if(!now||!this.entityVisible(now)){update.abort(new Error('Player target lost during approach'));return;}if(distance(now.position,point)>1){moved=true;update.abort(new Error('Visible player moved; update same target'));}},100);
-      try{await this.navigate(new goals.GoalNear(point.x,point.y,point.z,radius),AbortSignal.any([signal,update.signal]));}
+      // GoalNear counts block cells; aim one cell closer so the measured distance lands inside the radius.
+      try{await this.navigate(new goals.GoalNear(point.x,point.y,point.z,Math.max(1,radius-1)),AbortSignal.any([signal,update.signal]));}
       catch(e){if(signal.aborted)throw signal.reason;if(!moved)throw update.signal.reason??e;}
       finally{clearInterval(monitor);}
-      if(!moved){const current=this.bot.players[name]?.entity;if(!current||!this.entityVisible(current))throw Error('Player target lost after approach');if(current.position.distanceTo(this.bot.entity.position)>radius)throw Error('Player approach ended outside requested distance; reassess');}
+      if(!moved){const current=this.bot.players[name]?.entity;if(!current||!this.entityVisible(current))throw Error('Player target lost after approach');if(current.position.distanceTo(this.bot.entity.position)>radius+.5)throw Error('Player approach ended outside requested distance; reassess');}
     }
     throw Error('Player approach time limit; target not reached');
   }
@@ -413,18 +500,43 @@ export class MineflayerWorld implements World {
 
   private logs() { return this.bot.inventory.items().filter(i => /(_log|_stem)$/.test(i.name)); }
   private count() { return this.logs().reduce((n, i) => n + i.count, 0); }
+  private observeStale=true;private observedEye?:ReturnType<mineflayer.Bot['entity']['position']['clone']>;
+  // Name and collision shape from the chunk palette; building a full Block for each of ~7000 cells per observation
+  // dominated CPU. Unloaded chunks stay unknown (null), never air.
+  private cellAt(p:import('./vision.js').Position){
+    const v=this.bot.entity.position.scaled(0).offset(p.x,p.y,p.z),world=this.bot.world as unknown as {getColumnAt(v:unknown):unknown;getBlockStateId(v:unknown):number};
+    if(typeof world.getColumnAt!=='function')return this.bot.blockAt(v,false);
+    if(!world.getColumnAt(v))return null;const b=this.bot.registry.blocksByStateId[world.getBlockStateId(v)];
+    return b?{name:b.name,boundingBox:b.boundingBox}:null;
+  }
+  private shapes=new Map<number,{name:string;shapes:number[][]}>();
+  private cellShape(x:number,y:number,z:number){
+    const v=this.bot.entity.position.scaled(0).offset(x,y,z),world=this.bot.world as unknown as {getColumnAt(v:unknown):unknown;getBlockStateId(v:unknown):number};
+    if(!world.getColumnAt(v))return null;const id=world.getBlockStateId(v);let shape=this.shapes.get(id);
+    if(!shape){const b=this.bot.blockAt(v,false) as unknown as {name:string;shapes:number[][];stateId:number}|null;if(!b)return null;shape={name:b.name,shapes:b.shapes};this.shapes.set(b.stateId,shape);}
+    return shape;
+  }
+  // Observation rays only need the first hit's name and cell.
+  private cast(from:import('./vision.js').Position,dir:import('./vision.js').Position,range:number){
+    // Worlds without chunk access (test doubles) keep prismarine's raycast.
+    if(typeof (this.bot.world as unknown as {getColumnAt?:unknown}).getColumnAt!=='function'){const v=this.bot.entity.position.scaled(0),hit=this.bot.world.raycast(v.offset(from.x,from.y,from.z),v.offset(dir.x,dir.y,dir.z),range) as unknown as {name:string;position:import('./vision.js').Position}|null;return hit?{name:hit.name,position:hit.position}:null;}
+    return fastRaycast(from,dir,range,(x,y,z)=>this.cellShape(x,y,z));
+  }
   private observe(force = false) {
     if (!this.ready || !this.bot.entity) return;
     const dimension = String(this.bot.game.dimension);
     if (dimension !== this.observationDimension) { this.saveSpatial(true);this.memory.clear();this.knownCacheAt=-1;this.knownCache=[];this.navigationHints=[];this.navigationHintsAt=0; this.containers=this.spatial?.get(dimension,this.bot.entity.position).containers??[]; this.observationDimension = dimension; }
     if (!force && Date.now()-this.observedAt<500) return;
-    this.observedAt=Date.now();
     const e=this.bot.entity, eye=e.position.offset(0, (e as typeof e & {eyeHeight?:number}).eyeHeight ?? 1.62, 0);
+    if (!force && !this.observeStale && this.observedEye && eye.distanceTo(this.observedEye)<.25 && Date.now()-this.observedAt<3000) return;
+    this.observedAt=Date.now();this.observeStale=false;this.observedEye=eye.clone();
     const cast=(d:import('./vision.js').Position) => {
-      const hit=this.bot.world.raycast(eye,eye.scaled(0).offset(d.x,d.y,d.z),48) as unknown as {name:string;position:typeof eye} | null;
-      return hit ? {name:hit.name,position:hit.position} : null;
+      return this.cast(eye,d,48);
     };
-    const observed=sampleSurroundings(cast,this.observedAt);
+    const near=sampleNearSurfaces(eye,p=>this.cellAt(p),(d,length)=>{
+      return this.cast(eye,d,length)?.position??null;
+    },this.observedAt,this.knownPlaces());
+    const observed=[...sampleSurroundings(cast,this.observedAt),...near];
     this.occlusion=[['east',1,0,0],['west',-1,0,0],['up',0,1,0],['down',0,-1,0],['south',0,0,1],['north',0,0,-1]].map(([direction,x,y,z])=>{const hit=cast({x:Number(x),y:Number(y),z:Number(z)});return {direction:String(direction),surface:hit?{name:hit.name,position:{...hit.position},lastSeen:this.observedAt}:null};});
     this.visible=[...new Map(observed.map(b=>[`${b.position.x},${b.position.y},${b.position.z}`,b])).values()];
     this.memory.observe(this.visible);
@@ -452,7 +564,7 @@ export class MineflayerWorld implements World {
     // Automatic surrounding sensing still requires an unobstructed ray.
     return !this.bot.world.raycast(eye,d,Math.max(0,distance-.1));
   }
-  private async navigate(goal: InstanceType<typeof goals.GoalNear>,signal?:AbortSignal) {
+  private async navigate(goal: InstanceType<typeof goals.GoalNear>,signal?:AbortSignal,options:{escape?:boolean}={}) {
     // Traverse only observed supports, then look again from the reached frontier.
     // Do not pass an incomplete/no-path search to goto: upstream can reject its
     // Promise while continuing to walk a partial path.
@@ -474,6 +586,19 @@ export class MineflayerWorld implements World {
           }
           path=this.bot.pathfinder.getPathTo(this.bot.pathfinder.movements,goal,200);end=path.path.at(-1);
         }
+        if(options.escape&&(!end||end.x===feet.x&&end.y===feet.y&&end.z===feet.z)){
+          // No walkable route: for a chosen move only, try once more allowing digging and pillaring (escape from a pit
+          // or enclosure). Approaches for placing, mining or using things never dig: in CONT4 Alice's approach to a
+          // placement site dug her out of her own night shelter, and a zombie outside killed her.
+          let escape:ReturnType<typeof escapeMovements>|undefined;try{escape=escapeMovements(this.bot,p=>!!this.ownPlaced?.has(`${p.x},${p.y},${p.z}`));}catch{escape=undefined;}
+          const dug=escape?this.bot.pathfinder.getPathTo(escape,goal,400):{path:[] as {x:number;y:number;z:number}[],status:'noPath'},dugEnd=dug.path.at(-1);
+          if(dugEnd&&!(dugEnd.x===feet.x&&dugEnd.y===feet.y&&dugEnd.z===feet.z)){
+            this.log('navigation_escape',{from:{x:feet.x,y:feet.y,z:feet.z},to:{x:goal.x,y:goal.y,z:goal.z},status:dug.status,steps:dug.path.length});
+            const previous=this.bot.pathfinder.movements;this.bot.pathfinder.setMovements(escape!);
+            try{await this.bot.pathfinder.goto(dug.status==='success'?goal:new goals.GoalNear(dugEnd.x,dugEnd.y,dugEnd.z,0));}finally{this.bot.pathfinder.setGoal(null);this.bot.clearControlStates();this.bot.pathfinder.setMovements(previous);}
+            signal?.throwIfAborted();this.observe(true);continue;
+          }
+        }
         if(!end||end.x===feet.x&&end.y===feet.y&&end.z===feet.z)throw new NavigationFailure(navigationEvidence('no observed route after local scan',this.bot.entity.position,{x:goal.x,y:goal.y,z:goal.z},Math.sqrt((goal as any).rangeSq),path,[...observed.values()],scanned));
         const waypoint=path.status==='success'?goal:new goals.GoalNear(end.x,end.y,end.z,0);
         try{await this.bot.pathfinder.goto(waypoint);}finally{this.bot.pathfinder.setGoal(null);this.bot.clearControlStates();}
@@ -490,6 +615,10 @@ export class MineflayerWorld implements World {
       .map(e=>{this.combatEvidence?.seen(e.id,e.name!,Date.now());return {id:e.id,kind:e.name!,position:{x:e.position.x,y:e.position.y,z:e.position.z},distance:e.position.distanceTo(this.bot.entity.position)};})
       .sort((a,b)=>a.distance-b.distance).slice(0,16);
   }
+  private animals():Enemy[]{
+    if(!this.ready)return [];
+    return Object.values(this.bot.entities).filter(e=>animalKinds.has(e.name??'')&&!this.combatEvidence?.get(e.id)?.deathObserved&&this.entityVisible(e)).map(e=>{this.combatEvidence?.seen(e.id,e.name!,Date.now());return {id:e.id,kind:e.name!,position:{x:e.position.x,y:e.position.y,z:e.position.z},distance:e.position.distanceTo(this.bot.entity.position)};});
+  }
   private equipment() {
     const slots: [string,number][]=[['head',5],['chest',6],['legs',7],['feet',8],['offhand',45]];
     const result=slots.flatMap(([slot,n])=>{const i=this.bot.inventory.slots[n];return i?[{slot,name:i.name,durabilityUsed:i.durabilityUsed}]:[];});
@@ -499,25 +628,28 @@ export class MineflayerWorld implements World {
   }
   private async fight(action:'attack'|'flee',signal:AbortSignal,plan?:Plan) {
     const before=this.bot.health;
-    const kind=(plan?.targetEntityId===undefined?this.enemies()[0]:this.enemies().find(e=>e.id===plan.targetEntityId))?.kind ?? 'unknown';
+    const targets=()=>action==='attack'?[...this.enemies(),...this.animals()]:this.enemies();
+    const kind=(plan?.targetEntityId===undefined?targets()[0]:targets().find(e=>e.id===plan.targetEntityId))?.kind ?? 'unknown';
     let result:Encounter | undefined;
     let lastApproach: {x:number;y:number;z:number;at:number}|undefined;
     try {
       result=await combat({
-        observe:()=>({health:this.bot.health,position:this.bot.entity.position,enemies:this.enemies()}),
+        progress:value=>{if(this.motor)this.motor.combat=value;},
+        observe:()=>({health:this.bot.health,position:this.bot.entity.position,enemies:targets()}),
         faceLastSeen:async(p,s)=>{
           s.throwIfAborted();await this.bot.lookAt(this.bot.entity.position.scaled(0).offset(p.x,p.y+1,p.z),false);s.throwIfAborted();
         },
         targetEvidence:id=>this.combatEvidence.get(id),
+        // Fight with the best carried weapon even when the model chose the attack; DUO3 bots fought holding an axe
+        // while an iron sword sat in the next slot.
         equipWeapon:async()=>{
-          if(plan?.modelSelected)return;
-          const items=this.bot.inventory.items();
-          const weapon=items.find(i=>i.name.endsWith('_sword')) ?? items.find(i=>i.name.endsWith('_axe'));
-          if(weapon)await this.bot.equip(weapon,'hand');
+          const best=[...this.bot.inventory.items()].sort((a,b)=>weaponRank(b.name)-weaponRank(a.name))[0];
+          if(best&&weaponRank(best.name)>weaponRank(this.bot.heldItem?.name??''))await this.bot.equip(best,'hand');
         },
         // Conservative local timing by OWN tool class, not opponent strength.
-        cooldownMs:()=>this.bot.heldItem?.name.endsWith('_sword')?700:this.bot.heldItem?.name.endsWith('_axe')?1250:2000,
+        cooldownMs:()=>combatCooldownMs(this.bot.heldItem?.name),
         approach:e=>{
+          this.bot.setControlState('back',false);
           const now=Date.now();
           if(lastApproach&&distance(lastApproach,e.position)<.6&&now-lastApproach.at<500)return;
           lastApproach={...e.position,at:now};
@@ -525,17 +657,30 @@ export class MineflayerWorld implements World {
         },
         strike:async id=>{
           const e=this.bot.entities[id];
-          if(!e || !hostileKinds.has(e.name ?? '') || !this.entityVisible(e) || e.position.distanceTo(this.bot.entity.position)>2.8)return false;
+          if(!e || !(hostileKinds.has(e.name ?? '')||animalKinds.has(e.name??'')) || !this.entityVisible(e) || e.position.distanceTo(this.bot.entity.position)>2.8)return false;
           await this.bot.lookAt(e.position.offset(0,e.height/2,0),false);
           signal.throwIfAborted();
           if(!this.entityVisible(e) || e.position.distanceTo(this.bot.entity.position)>2.8)return false;
           this.bot.attack(e);return true;
         },
-        retreat:from=>{
-          const here=this.bot.entity.position;
-          const options=this.memory.snapshot().filter(b=>b.position.y===Math.floor(here.y)-1 && distance(b.position,here)<=8)
+        backstep:(e,others)=>{
+          const here=this.bot.entity.position,dx=here.x-e.position.x,dz=here.z-e.position.z,len=Math.hypot(dx,dz);
+          if(len<.1)return false;
+          const behind=here.offset(dx/len*1.2,0,dz/len*1.2),feet=this.bot.blockAt(behind),floor=this.bot.blockAt(behind.offset(0,-1,0));
+          // Only onto solid ground at the same level, never into a drop, liquid or another hostile.
+          if(!floor||floor.boundingBox!=='block'||!feet||feet.boundingBox!=='empty'||/lava|water/.test(feet.name+floor.name))return false;
+          if(others.some(o=>distance(o,behind)<3))return false;
+          this.bot.pathfinder.setGoal(null);
+          void this.bot.lookAt(here.scaled(0).offset(e.position.x,e.position.y+1.5,e.position.z),true);
+          this.bot.setControlState('forward',false);this.bot.setControlState('back',true);return true;
+        },
+        retreat:(from,others=[])=>{
+          const here=this.bot.entity.position,threats=[from,...others],nearest=(p:{x:number;y:number;z:number})=>Math.min(...threats.map(t=>distance(p,t)));
+          // Known floor up to 24 blocks away (one block of height change), farthest from the nearest threat first:
+          // fleeing one zombie of a group ran toward the others.
+          const options=this.memory.snapshot().filter(b=>Math.abs(b.position.y-(Math.floor(here.y)-1))<=1 && distance(b.position,here)<=24)
             .map(b=>({x:b.position.x+.5,y:b.position.y+1,z:b.position.z+.5}))
-            .filter(p=>distance(p,from)>distance(here,from)+2).sort((a,b)=>distance(b,from)-distance(a,from));
+            .filter(p=>nearest(p)>nearest(here)+4).sort((a,b)=>nearest(b)-nearest(a));
           if(!options.length)return false;
           const p=options[0];this.bot.pathfinder.setGoal(new goals.GoalNear(p.x,p.y,p.z,1));return true;
         },
@@ -547,40 +692,74 @@ export class MineflayerWorld implements World {
       this.encounters=this.encounters.slice(-12);
     }
   }
+  private sitesCacheAt=-1;private sitesCache:NonNullable<Snapshot['placementSites']>=[];
   private observedPlacementSites(){
+    if(Number.isFinite(this.observedAt)&&this.sitesCacheAt===this.observedAt)return this.sitesCache;
     const sites:NonNullable<Snapshot['placementSites']>=[],eye=this.bot.entity.position.offset(0,1.62,0);
     for(const b of this.visible){
+      if(['air','cave_air','void_air','water','lava'].includes(b.name))continue;
       const ref=this.bot.entity.position.scaled(0).offset(b.position.x,b.position.y,b.position.z);
       for(const [x,y,z] of [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]]){
         const target=ref.offset(x,y,z),contact=ref.offset(.5+x*.5,.5+y*.5,.5+z*.5),delta=contact.minus(eye),length=delta.norm();
-        if(length<.05||length>48||this.bot.world.raycast(eye,delta.scaled(1/length),length-.02))continue;
-        if(this.bot.blockAt(target)?.name!=='air'||overlapsCell(target,this.bot.entity.position))continue;
+        if(target.offset(.5,.5,.5).distanceTo(eye)>12||length<.05||this.cast(eye,delta.scaled(1/length),length-.02))continue;
+        if(!replaceable(this.bot.blockAt(target)?.name)||overlapsCell(target,this.bot.entity.position))continue;
         sites.push({position:{x:target.x,y:target.y,z:target.z},reference:{...b.position}});
       }
     }
-    return sites;
+    this.sitesCacheAt=this.observedAt;this.sitesCache=sites;return sites;
   }
+  private catalogMissingLogged=false;
+  // Permitted recipes per unlocked output, rebuilt only when the unlocked set or recipe catalog changes.
+  private recipeIndex?:{book:unknown;key:string;byName:Map<string,{recipes:any[];facts?:RecipeFact[]}>};
+  private unlockedRecipes(){
+    const unlocked=this.recipeBook.snapshot().unlocked,key=String(this.recipeBook.revision);
+    if(this.recipeIndex?.key!==key||this.recipeIndex.book!==this.recipeBook){
+      const byName=new Map<string,{recipes:any[]}>();
+      for(const name of new Set(unlocked.map(id=>id.replace(/^minecraft:/,'')))){const id=this.bot.registry.itemsByName[name]?.id;if(id!==undefined)byName.set(name,{recipes:this.bot.recipesAll(id,null,true).filter(r=>this.recipeBook.permits?.(r)??true)});}
+      this.recipeIndex={book:this.recipeBook,key,byName};
+    }
+    return this.recipeIndex.byName;
+  }
+  recipes(item:string):RecipeFact[]{
+    if(!this.ready)return [];const entry=this.unlockedRecipes().get(item);if(!entry)return [];
+    return entry.facts??=entry.recipes.flatMap(r=>{const fact=recipeFact(r,this.bot.registry.items);return fact?[fact]:[];});
+  }
+  private craftCache?:{key:string;craftable:string[];inventoryCraftable:string[];crafting?:Snapshot['crafting']};
   snapshot(): Snapshot {
     this.observe();
     const position = this.bot.entity?.position ?? { x: 0, y: 0, z: 0 };
     const logs = this.ready ? this.count() : 0;
     const table=this.ready ? this.table() : null;
     const knownTables=this.ready?this.knownPlaces().some(b=>b.name==='crafting_table'&&distance(b.position,position)<=48):false;
-    const inventoryCraftable:string[]=[];
-    const craftable=this.ready ? [...new Set(this.recipeBook.snapshot().unlocked.map(id=>id.replace(/^minecraft:/,'')).filter(name=>{
-      const item=this.bot.registry.itemsByName[name];
-      if(!item)return false;const byHand=this.bot.recipesFor(item.id,null,1,null).length>0;if(byHand)inventoryCraftable.push(name);return byHand||this.bot.recipesFor(item.id,null,1,table??knownTables).length>0;
-    }))] : [];
+    // Recipe feasibility scans every unlocked recipe (over a second with ~1300 unlocked), so it is recomputed only
+    // when inventory, unlocked recipes or workstation access change.
+    const craftKey=this.ready?JSON.stringify([this.bot.inventory.items().map(i=>[i.type,i.metadata,i.count]),this.recipeBook.revision,table?.position?[table.position.x,table.position.y,table.position.z]:null,knownTables]):'';
+    if(craftKey!==this.craftCache?.key){
+      // Same test as mineflayer's recipesFor(item,null,1,table) on the cached permitted recipes.
+      const counts=new Map<string,number>(),count=(id:number,metadata:number|null)=>{const k=id+':'+metadata;let n=counts.get(k);if(n===undefined){n=this.bot.inventory.count(id,metadata);counts.set(k,n);}return n;};
+      const met=(r:any)=>r.delta.every((d:any)=>count(d.id,d.metadata)+d.count*Math.ceil(1/r.result.count)>=0);
+      const inventoryCraftable:string[]=[],craftable:string[]=[];
+      if(this.ready)for(const [name,{recipes}] of this.unlockedRecipes()){
+        const byHand=recipes.some(r=>!r.requiresTable&&met(r));if(byHand)inventoryCraftable.push(name);
+        if(byHand||!!(table??knownTables)&&recipes.some(met))craftable.push(name);
+      }
+      this.craftCache={key:craftKey,craftable,inventoryCraftable};
+    }
+    const craftable=[...this.craftCache!.craftable],inventoryCraftable=[...this.craftCache!.inventoryCraftable];
     const knownPlaces=this.knownPlaces();
-    const snapshot:Snapshot={ inventoryCraftable,perception:{mode:'panorama',range:48,occlusion:this.occlusion,semantics:'Automatic all-direction first-hit sampling; no look needed. First-hit surfaces occlude space behind them. occlusion lists six sampled axis rays only, not entire sectors: a surface blocks that ray beyond it; null means no surface hit within range, not a known empty volume. Unsampled or beyond-range space is unknown, not empty; remembered cells are past observations.'},importantPlaces:this.importantPlaces?.snapshot()??[],placementSites:this.ready?this.observedPlacementSites():[],edibleItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>this.bot.registry.foodsByName[i.name]).map(i=>i.name))]:[],observedDestinationKeys:knownPlaces.map(b=>[b.position.x,b.position.y,b.position.z].join(',')),navigationTargets:this.navigationTargets(),visibleItems:this.ready?this.visibleItems():[],placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
+    const snapshot:Snapshot={selfName:this.bot.username,sleeping:this.bot.isSleeping,timeOfDay:this.bot.time?.timeOfDay,time:dayTime(this.bot.time?.timeOfDay),animals:this.animals(), inventoryCraftable,perception:{mode:'panorama',range:48,occlusion:this.occlusion,semantics:'Automatic all-direction observation: per-block visible-face checks within 12 blocks of eyes and sampled first hits up to 48; no look needed. First-hit surfaces occlude space behind them. occlusion lists six sampled axis rays only, not entire sectors: a surface blocks that ray beyond it; null means no surface hit within range, not a known empty volume. Unsampled or beyond-range space is unknown, not empty; remembered cells are past observations.'},importantPlaces:this.importantPlaces?.snapshot()??[],placementSites:this.ready?this.observedPlacementSites():[],edibleItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>this.bot.registry.foodsByName[i.name]).map(i=>i.name))]:[],observedDestinationKeys:knownPlaces.map(b=>[b.position.x,b.position.y,b.position.z].join(',')),navigationTargets:this.navigationTargets(),visibleItems:this.ready?this.visibleItems():[],rememberedItems:this.ready?this.dropMemory.remembered(this.visibleItems()):[],respawnPoint:this.respawnBed?{kind:'bed',position:this.respawnBed.position,dimension:this.respawnBed.dimension}:{kind:'world_spawn'},ownPlacedBlocks:!this.ready||!this.bot.entity||!this.ownPlaced?[]:[...this.ownPlaced.values()].filter(b=>{const now=this.bot.blockAt(this.bot.entity.position.scaled(0).offset(b.position.x,b.position.y,b.position.z));if(now&&now.name!==b.name){this.ownPlaced.delete(`${b.position.x},${b.position.y},${b.position.z}`);return false;}return true;}).map(b=>({name:b.name,position:b.position})),placeableItems:this.ready?[...new Set(this.bot.inventory.items().filter(i=>buildingMaterial(i.name)&&this.bot.registry.blocksByName[i.name]).map(i=>i.name))]:[],containers:structuredClone(this.containers),canPlaceTable:this.ready&&this.itemCount('crafting_table')>0&&!!this.placementSupport(),onlinePlayers:this.ready?Object.keys(this.bot.players).filter(n=>n!==this.bot.username).sort():[],nearbyPlayers:this.ready?Object.values(this.bot.entities).filter(e=>e.type==='player'&&e.username&&e.username!==this.bot.username&&this.entityVisible(e)).map(e=>({name:e.username!,position:{x:e.position.x,y:e.position.y,z:e.position.z}})):[],incomingDamage:this.incomingDamage.snapshot(Date.now()),combatEvents:this.combatEvidence.snapshot(),enemies:this.enemies(),equipment:this.ready?this.equipment():[],encounters:structuredClone(this.encounters), inventory: this.ready ? this.bot.inventory.slots.flatMap((i,slot)=>i && slot>=5 ? [{name:i.name,count:i.count,slot,enchants:structuredClone(i.enchants??[]),durabilityUsed:i.durabilityUsed}] : []) : [],
       vision: {yaw:this.bot.entity?.yaw ?? 0,pitch:this.bot.entity?.pitch ?? 0,blocks:structuredClone(this.visible)}, places:structuredClone(knownPlaces),craftable,
-      dimension:String(this.bot.game?.dimension??'unknown'),environment:{inWater:!!(this.bot.entity as any)?.isInWater,inLava:!!(this.bot.entity as any)?.isInLava,onGround:!!this.bot.entity?.onGround,oxygen:(this.bot as any).oxygenLevel},lifecycle:{generation:this.generation,deathCount:this.deathCount,phase:this.dead?'dead':this.ready?'alive':'connecting',lastDeath:this.recovery.context().deaths.at(-1)},recovery:this.recovery.context(),
+      dimension:String(this.bot.game?.dimension??'unknown'),environment:{inWater:!!(this.bot.entity as any)?.isInWater,inLava:!!(this.bot.entity as any)?.isInLava,onGround:!!this.bot.entity?.onGround,oxygen:(this.bot as any).oxygenLevel},lifecycle:{generation:this.generation,deathCount:this.deathCount,phase:this.dead?'dead':this.ready?'alive':'connecting',lastDeath:this.recovery.context().deaths.at(-1)},recovery:this.recovery.view(),
       ready: this.ready, health: this.bot.health ?? 0, food: this.bot.food ?? 0, logs,
       canMine: this.ready && this.visible.some(b=>!['bedrock','water','lava','air'].includes(b.name)), canDeposit: this.ready && this.bot.inventory.items().length>0 && this.visible.some(b=>['chest','furnace','blast_furnace','smoker'].includes(b.name)),
       foodAvailable: this.ready && !!this.food(),
       canEat: this.ready && (this.bot.food ?? 20) < 20 && !!this.food(),
       canFollow: this.ready && !!this.bot.players[this.c.follow]?.entity && this.entityVisible(this.bot.players[this.c.follow].entity!),
       position: { x: position.x, y: position.y, z: position.z }, chatEvents:structuredClone(this.chatEvents),messages: [...this.messages], recipeBook: this.recipeBook.snapshot() };
+    if(this.ready&&this.recipeBook.snapshot().unlocked.length&&!this.recipeBook.catalogSize&&!this.catalogMissingLogged){this.catalogMissingLogged=true;this.log('recipe_catalog_missing',{unlocked:this.recipeBook.snapshot().unlocked.length,meaning:'declare_recipes not received; recipes are gated by unlocked names only'});}
+    // Same inputs as craftable (inventory, recipes, workstation access), so it shares the cache key.
+    this.craftCache!.crafting??=craftingState(snapshot,item=>this.recipes(item),item=>{const id=this.bot.registry.itemsByName[item]?.id;return id===undefined||!craftable.includes(item)?0:feasibleExecutions(count=>this.bot.recipesAll(id,null,table??knownTables).some(r=>this.recipeBook.permits(r)&&recipeBatchAvailable(r,count,(id,metadata)=>this.bot.inventory.count(id,metadata??null))));});
+    snapshot.crafting=structuredClone(this.craftCache!.crafting);
     if(snapshot.ready&&snapshot.health>0&&!this.dead)this.lastAlivePossessions={at:Date.now(),inventory:structuredClone(snapshot.inventory),equipment:structuredClone(snapshot.equipment)};
     return snapshot;
   }
@@ -597,7 +776,7 @@ export class MineflayerWorld implements World {
       let parsed:any;try{parsed=JSON.parse(returned??'');}catch{}
       const t=this.transferSnapshot(),delta=t?(after[t.item]??0)-t.inventoryBefore:undefined;
       const transfer=t?{item:t.item,requested:t.requested,inventoryDelta:delta,containerDelta:t.containerAfter===undefined?null:t.containerAfter-t.containerBefore,confirmedTransferred:t.containerAfter!==undefined&&delta===-(t.containerAfter-t.containerBefore)?Math.max(0,Math.min(t.requested,action==='deposit'?-delta!:delta!)):null}:undefined;
-      this.actionReceipt={action,target:plan?.mine??plan?.build??plan?.craft??plan?.container??plan?.pickup??plan?.followPlayer??plan?.destination??plan?.targetEntityId??null,phaseAtEnd,elapsedMs:Date.now()-started,cancelRequested:signal.aborted,returned:returned!==undefined,failureReason:failure??parsed?.detail,reportedStatus:parsed?.status??parsed?.outcome,from,to:position(),inventoryDelta,...(transfer?{transfer:{...transfer,remaining:transfer.confirmedTransferred===null?null:t!.requested-transfer.confirmedTransferred}}:{}),meaning:'Observed changes and execution outcome are separate. Inventory deltas alone do not prove item origin, recipient receipt or task completion. Missing confirmation is unknown, not zero effect.'};
+      this.actionReceipt={action,target:plan?.mine??plan?.build??plan?.craft??plan?.container??plan?.pickup??plan?.followPlayer??plan?.destination??plan?.targetEntityId??null,phaseAtEnd,motorAtEnd:this.executionProgress(),elapsedMs:Date.now()-started,cancelRequested:signal.aborted,returned:returned!==undefined,failureReason:failure??parsed?.detail,reportedStatus:parsed?.status??parsed?.outcome,from,to:position(),inventoryDelta,...(transfer?{transfer:{...transfer,remaining:transfer.confirmedTransferred===null?null:t!.requested-transfer.confirmedTransferred}}:{}),meaning:'Observed changes and execution outcome are separate. Inventory deltas alone do not prove item origin, recipient receipt or task completion. Missing confirmation is unknown, not zero effect.'};
       this.motor=undefined;
     }
   }
@@ -607,20 +786,46 @@ export class MineflayerWorld implements World {
     let window: Awaited<ReturnType<mineflayer.Bot['openChest']>> | undefined;
     try {
       this.observe(true);
+      if(action==='sleep'){
+        const p=plan?.bed;if(!p)throw Error('Missing selected bed');
+        if(!['overworld','minecraft:overworld'].includes(String(this.bot.game.dimension)))throw Error('Sleep only supported in Overworld');
+        const known=this.knownPlaces().find(b=>sameCell(b.position,p));if(!known||!isBed(known.name)||distance(p,this.bot.entity.position)>13.62)throw Error('Bed not known in local scope');
+        this.phase('approach','Approaching selected bed; sleep not yet confirmed.');await this.navigate(new goals.GoalNear(p.x,p.y,p.z,2),signal);signal.throwIfAborted();this.observe(true);
+        const bed=this.bot.blockAt(this.bot.entity.position.scaled(0).offset(p.x,p.y,p.z));if(!bed||!isBed(bed.name)||!this.blockInSight(bed))throw Error('Selected bed changed or occluded');
+        this.phase('opening','Requesting server-confirmed sleep in selected bed.');
+        // The server states why it refused (for example a block above the bed); without it the bot only saw
+        // "bot is not sleeping" and kept retrying an obstructed bed in DUO4.
+        let refusal:string|undefined,spawnSet=false;const onMessage=(m:unknown)=>{const key=(m as {translate?:string}|null)?.translate;if(key==='block.minecraft.set_spawn')spawnSet=true;else if(typeof key==='string'&&key.startsWith('block.minecraft.bed.'))refusal=key;};
+        this.bot.on?.('message',onMessage);
+        const dimension=String(this.bot.game.dimension),night=this.bot.time.timeOfDay>=12541&&this.bot.time.timeOfDay<=23458,thunder=this.bot.isRaining&&(this.bot as any).thunderState>0;
+        // mineflayer refuses before contacting the server in daytime, but vanilla still sets the respawn point
+        // when a bed is used by day. Use the bed directly and report what the server said.
+        if(!night&&!thunder){
+         try{await this.bot.activateBlock(bed);const until=Date.now()+1500;while(!spawnSet&&!refusal&&Date.now()<until)await delay(50,undefined,{signal});}
+         finally{this.bot.removeListener?.('message',onMessage);}
+         if(spawnSet){this.setRespawnBed({position:{...p},dimension,at:Date.now()});this.log('respawn_set',{bed:p});}
+         if(refusal&&refusal!=='block.minecraft.bed.no_sleep')throw Error(`Server refused bed use: ${BED_REFUSALS[refusal]??refusal} (${refusal})`);
+         if(!spawnSet)throw Error('Bed used in daytime; the server did not confirm a respawn point');
+         return RESPAWN_SET_RESULT;
+        }
+        try{await this.bot.sleep(bed);this.setRespawnBed({position:{...p},dimension,at:Date.now()});this.log('sleep_confirmed',{bed:p,timeOfDay:this.bot.time.timeOfDay});signal.throwIfAborted();while(this.bot.isSleeping){await delay(100,undefined,{signal});}return 'Sleep confirmed, then woke';}
+        catch(error){if(!refusal&&!signal.aborted)await delay(100);if(refusal)throw Error(`Server refused sleep: ${BED_REFUSALS[refusal]??refusal} (${refusal})`);throw error;}
+        finally{this.bot.removeListener?.('message',onMessage);if(this.bot.isSleeping)await this.bot.wake();}
+      }
       if(action==='equip')return await executeEquip(this.bot,plan?.equip!,signal);
       if(action==='pickup')return await this.pickupItem(signal,plan);
       if(action==='mine')return await this.mineBlock(signal,plan);
       if(action==='place_block'||action==='place_table'&&plan?.modelSelected)return await this.buildAction('place_block',signal,plan);
       if(['place_table','inspect_container','withdraw','deposit','give'].includes(action))return await this.interact(action,signal,plan);
-      if(action==='attack'||action==='flee'){this.phase('tracking','Bounded combat against selected observed enemy; target loss is not death.');return await this.fight(action,signal,plan);}
+      if(action==='attack'||action==='flee'){this.phase('tracking','Bounded interaction with the selected visible enemy or passive animal; motor.combat distinguishes approach, swing delay and attacks. Target loss is not death.');return await this.fight(action,signal,plan);}
       if (action === 'look') {
         await this.bot.look(plan?.look?.yaw ?? this.bot.entity.yaw+Math.PI/2, plan?.look?.pitch ?? (Math.abs(this.bot.entity.pitch)<.2?-Math.PI/4:0), false);
         this.observe(true);
       }
       if (action === 'move') {
         const p=plan?.destination;
-        if (!p || !knownDestination({places:this.knownPlaces(),dimension:String(this.bot?.game?.dimension??''),recovery:this.recovery?.context(),importantPlaces:this.importantPlaces?.snapshot()??[]},p)) throw new Error('Destination not observed');
-        this.phase('approach','Moving to selected coordinate; arrival is not proof of task reach or safety.');await this.navigate(new goals.GoalNear(p.x,p.y,p.z,MOVE_RADIUS),signal);
+        if (!p || !(knownDestination({places:this.knownPlaces(),dimension:String(this.bot?.game?.dimension??''),recovery:this.recovery?.context(),importantPlaces:this.importantPlaces?.snapshot()??[]},p)||referencedDestination(plan))) throw new Error('Destination not observed');
+        this.phase('approach','Moving to selected coordinate; arrival is not proof of task reach or safety.');await this.navigate(new goals.GoalNear(p.x,p.y,p.z,MOVE_RADIUS),signal,{escape:true});
         this.observe(true);return JSON.stringify({kind:'move',outcome:'arrived_within_radius',target:p,radius:MOVE_RADIUS,meaning:'Arrival is not proof of route safety or reach for another task.'});
       }
       if (action === 'craft') {
@@ -628,7 +833,9 @@ export class MineflayerWorld implements World {
         if(!request || !Number.isInteger(request.count) || request.count<1 || request.count>16) throw new Error('Invalid crafting request');
         const item=this.bot.registry.itemsByName[request.item];
         if(!item) throw new Error('Unknown item');
-        const inventoryRecipe=this.bot.recipesFor(item.id,null,1,null)[0];
+        const matches=(r:any)=>(!request.recipeKey||recipeFact(r,this.bot.registry.items)?.key===request.recipeKey)&&(!this.recipeBook.snapshot().unlocked.some(id=>id.replace(/^minecraft:/,'')===request.item)||(this.recipeBook.permits?.(r)??true));
+        if(request.recipeKey&&!this.recipes(request.item).some(r=>r.key===request.recipeKey))throw Error('Invalid crafting recipe: not unlocked or no longer available');
+        const inventoryRecipe=this.bot.recipesFor(item.id,null,1,null).find(r=>matches(r)&&recipeBatchAvailable(r,request.count,(id,metadata)=>this.bot.inventory.count(id,metadata??null)));
         let table=inventoryRecipe ? null : this.table();
         if(!inventoryRecipe&&request.workstation){
           const p=request.workstation,known=this.visible?.find(b=>samePosition(b.position,p))??this.knownPlaces().find(b=>samePosition(b.position,p));
@@ -653,10 +860,11 @@ export class MineflayerWorld implements World {
           const observed=this.bot.blockAt(table.position);
           table=observed?.name==='crafting_table'&&this.blockInSight(observed)?observed:null;
         }
-        const recipe=inventoryRecipe ?? this.bot.recipesFor(item.id,null,1,table)[0];
-        if(!recipe) throw new Error(craftFailure(this.bot,request,this.recipeBook.snapshot().unlocked,table));
+        const recipe=inventoryRecipe ?? this.bot.recipesFor(item.id,null,1,table).find(r=>matches(r)&&recipeBatchAvailable(r,request.count,(id,metadata)=>this.bot.inventory.count(id,metadata??null)));
+        if(!recipe) throw new Error(craftFailure(this.bot,request,this.recipeBook.snapshot().unlocked,table,r=>this.recipeBook.permits?.(r)??true));
+        await settleCraftInventory(this.bot);
         const before=this.bot.inventory.items().filter(i=>i.type===item.id).reduce((n,i)=>n+i.count,0);
-        signal.throwIfAborted(); if(recipe.delta.some(d=>this.bot.inventory.count(d.id,d.metadata)+d.count*request.count<0)) throw new Error(craftFailure(this.bot,request,this.recipeBook.snapshot().unlocked,table));
+        signal.throwIfAborted(); if(recipe.delta.some(d=>this.bot.inventory.count(d.id,d.metadata)+d.count*request.count<0)) throw new Error(craftFailure(this.bot,request,this.recipeBook.snapshot().unlocked,table,r=>this.recipeBook.permits?.(r)??true));
         // Mineflayer has no craft AbortSignal: guard every inventory click and
         // finish one recipe at a time so cancellation cannot start another batch.
         const originalClick=this.bot.clickWindow;
@@ -664,8 +872,15 @@ export class MineflayerWorld implements World {
           signal.throwIfAborted(); return originalClick.apply(this.bot,args);
         }) as typeof originalClick;
         this.phase('crafting','Executing selected recipe batches; inventory changes, not requested count, establish progress.');
-        try { for(let i=0;i<request.count;i++){signal.throwIfAborted();await this.bot.craft(recipe,1,table ?? undefined);} }
-        finally { this.bot.clickWindow=originalClick; }
+        try { for(let i=0;i<request.count;i++){
+          signal.throwIfAborted();
+          try{await this.bot.craft(recipe,1,table ?? undefined);}
+          finally{
+            this.bot.clickWindow=originalClick;
+            await settleCraftInventory(this.bot);
+            this.bot.clickWindow=((...args: Parameters<typeof originalClick>)=>{signal.throwIfAborted();return originalClick.apply(this.bot,args);}) as typeof originalClick;
+          }
+        } } finally { this.bot.clickWindow=originalClick; }
         signal.throwIfAborted();
         const after=this.bot.inventory.items().filter(i=>i.type===item.id).reduce((n,i)=>n+i.count,0);
         if(after-before<recipe.result.count*request.count) throw new Error('Crafting not confirmed');

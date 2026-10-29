@@ -73,3 +73,20 @@ test('reworded unsolicited reports need new evidence across reconnects; replies 
  assert.equal(b.send({to:'Alice',kind:'report',replyTo:'q',text:'지금 네 개 있어.'},x=>out.push(x),120000,'same-state').sent,true);
  assert.equal(b.send({to:'Alice',kind:'report',text:'이제 다섯 개야.'},x=>out.push(x),130000,'changed-state').sent,true);
 });
+test('kept advice outlives the recent chat window without being sent twice',async()=>{
+ const {SocialMemory}=await import('../src/social.js');const {validateMessageDecisions}=await import('../src/providers.js');
+ const m=new SocialMemory('Alice'),advice={id:'adv',at:1,speaker:'Mentor',text:'Dig in and cover the top before night until you have wool for a bed.'};
+ m.ingest([advice]);const raw:any={messageDecisions:[{messageId:'adv',decision:'keep_advice',reason:'Night survival knowledge'}]};
+ validateMessageDecisions(raw,[{id:'adv'}]);assert.equal(raw.messageDecisions[0].decision,'keep_advice');
+ m.keepAdvice('adv','Night survival knowledge');
+ let c=m.context() as any;assert.equal(c.keptAdvice,undefined);assert.equal(c.heard.find((e:any)=>e.id==='adv').keptAsAdvice,true);
+ m.ingest(Array.from({length:16},(_,i)=>({id:'n'+i,at:10+i,speaker:'Bob',text:'chat '+i})));
+ c=m.context();assert.ok(!c.heard.some((e:any)=>e.id==='adv'));assert.deepEqual(c.keptAdvice.map((a:any)=>[a.id,a.speaker,a.text]),[['adv','Mentor',advice.text]]);
+ assert.throws(()=>m.keepAdvice('missing','x'),/Invalid advice/);
+});
+test('the addressee prefix is added only when the text does not already start with that name',()=>{
+ const out:string[]=[];const s=new SocialMemory('Bob');
+ assert.equal(s.send({to:'Alice',kind:'chat',text:'Alice, 돌 설치 확인했어'},t=>out.push(t),10000).sent,true);
+ assert.equal(s.send({to:'Alice',kind:'chat',text:'판자 더 있어?'},t=>out.push(t),20000).sent,true);
+ assert.deepEqual(out,['Alice, 돌 설치 확인했어','Alice, 판자 더 있어?']);
+});

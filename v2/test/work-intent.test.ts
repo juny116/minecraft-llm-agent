@@ -80,7 +80,7 @@ test('runtime notices intention completion and asks for review without requiring
 test('snapshot before login does not access unavailable inventory for food',async()=>{
  const {MineflayerWorld}=await import('../src/mineflayer.js');
  const w=Object.create(MineflayerWorld.prototype) as any;
- Object.assign(w,{ready:false,bot:{},observe:()=>{},knownPlaces:()=>[],navigationTargets:()=>[],containers:[],incomingDamage:{snapshot:()=>[]},combatEvidence:{snapshot:()=>[]},enemies:()=>[],encounters:[],visible:[],recovery:{context:()=>({deaths:[]})},chatEvents:[],messages:[],recipeBook:{snapshot:()=>({initialized:false,unlocked:[]})}});
+ Object.assign(w,{ready:false,bot:{},observe:()=>{},knownPlaces:()=>[],navigationTargets:()=>[],containers:[],incomingDamage:{snapshot:()=>[]},combatEvidence:{snapshot:()=>[]},enemies:()=>[],encounters:[],visible:[],recovery:{context:()=>({deaths:[]}),view:()=>({deaths:[]})},chatEvents:[],messages:[],recipeBook:{snapshot:()=>({initialized:false,unlocked:[]})}});
  assert.equal(w.snapshot().foodAvailable,false);assert.equal(w.snapshot().canEat,false);
 });
 

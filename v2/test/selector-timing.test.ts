@@ -43,3 +43,17 @@ test('pending selector stays single flight after action completion',async()=>{
  try {await runtime.tick();const pending=runtime.tick(Date.now()+1100);world.finish();await x.executionTask;await runtime.tick(Date.now()+1200);assert.equal(calls,2);resolve(answer('continue'));await pending;}
  finally{runtime.close();await x.executionTask;}
 });
+test('health lost while deciding discards an ordinary choice but not a response to the attacker',async()=>{
+ const zombie={id:7,kind:'zombie',position:{x:1,y:64,z:0},distance:1};
+ const pick=(action:'look'|'attack'):Supervision=>action==='look'?startLook():({...answer('selected'),selected:{id:'attack',action:'attack',plan:{goal:'fight',preferred:'attack',targetEntityId:7,modelSelected:true}}});
+ for(const action of ['look','attack'] as const){
+  let resolve!:(d:Supervision)=>void;
+  const {world,runtime,x,events}=fixture(async()=>new Promise<Supervision>(r=>resolve=r));
+  try{
+   world.state.enemies=[zombie];const pending=runtime.tick();await new Promise(r=>setTimeout(r,0));
+   world.state.health=17;resolve(pick(action));await pending;
+   const discarded=events.some(e=>e.event==='decision_discarded'&&e.data.reason==='threat changed');
+   assert.equal(discarded,action==='look');assert.equal(world.starts,action==='attack'?1:0);
+  }finally{runtime.close();await x.executionTask;}
+ }
+});

@@ -11,9 +11,11 @@
     "start": "tsx src/cli.ts --live",
     "api:check": "tsx src/cli.ts --api-check",
     "test": "tsx --test test/*.test.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "procedure:mock": "tsx scripts/procedure-mock.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.1.0",
     "dotenv": "^18.0.8",
     "mineflayer": "^4.39.0",
     "mineflayer-pathfinder": "^2.4.5"

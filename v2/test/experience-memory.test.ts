@@ -52,7 +52,7 @@ test('runtime saves actions, reflects with a fake LLM, and supplies restored rel
 });
 test('reflection uses shared API budget and fake HTTP only',async t=>{
  const {m}=fixture(t),id=m.add(record()),budget=new Budget(1,1);let calls=0;
- const api=new ApiBrain({...config(),llmKey:'fake',mode:'jev'},budget,(async(_u:any,init:any)=>{calls++;const body=JSON.parse(init.body);assert.ok(body.messages[0].content.includes('counterexamples'));assert.ok(body.messages[1].content.includes(id));return Response.json({choices:[{message:{content:JSON.stringify({updates:[draft(id)]})}}],usage:{prompt_tokens:2,completion_tokens:2}});}) as typeof fetch);
+ const api=new ApiBrain({...config(),llmKey:'fake',mode:'jev'},budget,(async(_u:any,init:any)=>{calls++;const body=JSON.parse(init.body);assert.ok(body.messages[0].content.includes('counterexamples'));assert.equal(JSON.parse(body.messages[1].content).episodes[0].id,"E1");return Response.json({choices:[{message:{content:JSON.stringify({updates:[draft("E1")]})}}],usage:{prompt_tokens:2,completion_tokens:2}});}) as typeof fetch);
  const ctx=m.reflection();m.apply(ctx,await api.reflect(ctx,new AbortController().signal),api.reflectionModel);assert.equal(calls,1);assert.equal(budget.calls,1);
  await assert.rejects(()=>api.reflect(ctx,new AbortController().signal));assert.equal(calls,1);
 });
