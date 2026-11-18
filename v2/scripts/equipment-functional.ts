@@ -1,0 +1,10 @@
+import {mkdirSync,appendFileSync} from 'node:fs';import {setTimeout as delay} from 'node:timers/promises';import {config} from '../src/config.js';import {MineflayerWorld} from '../src/mineflayer.js';import type {EquipRequest} from '../src/equipment.js';
+if(!process.argv.includes('--live-functional'))throw Error('Explicit flag required');
+const dir=`runs/equipment-${Date.now()}`;mkdirSync(dir,{recursive:true,mode:0o700});const log=(event:string,data:unknown={})=>{const l=JSON.stringify({at:new Date().toISOString(),event,data});console.log(l);appendFileSync(dir+'/events.jsonl',l+'\n');};
+const w=new MineflayerWorld('Bob',config(),(e,f)=>log(e,f)),c=new AbortController();const hard=setTimeout(()=>{c.abort();w.stop();w.close();setTimeout(()=>process.exit(2),500);},40000);
+const snap=()=>{const s=w.snapshot();return {inventory:s.inventory,equipment:s.equipment,health:s.health};};
+async function act(e:EquipRequest){log('before',{request:e,state:snap()});const result=JSON.parse(await w.execute('equip',AbortSignal.any([c.signal,AbortSignal.timeout(6000)]),{goal:'Functional equipment check',preferred:'equip',equip:e}));log('result',{result,state:snap()});await delay(1000);}
+try{for(let i=0;i<150&&!w.snapshot().ready;i++)await delay(100);if(!w.snapshot().ready)throw Error('Spawn timeout');await delay(1000);log('initial',snap());
+await act({item:null,destination:'head'});const helmet=w.snapshot().inventory?.find(i=>i.name==='iron_helmet');if(!helmet)throw Error('Helmet missing');await act({item:'iron_helmet',destination:'head',sourceSlot:helmet.slot});
+await act({item:'iron_pickaxe',destination:'hand'});await act({item:'iron_sword',destination:'hand'});await act({item:null,destination:'hand'});await act({item:'iron_sword',destination:'hand'});log('final',snap());
+}catch(e){log('fatal',{error:e instanceof Error?e.message:String(e)});process.exitCode=1;}finally{clearTimeout(hard);c.abort();w.stop();w.close();log('closed',{dir,apiCalls:0});await delay(500);process.exit(process.exitCode??0);}

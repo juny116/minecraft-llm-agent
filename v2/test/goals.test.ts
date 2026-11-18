@@ -1,0 +1,141 @@
+import {RecoveryMemory} from "../src/recovery.js";
+import test from 'node:test';import assert from 'node:assert/strict';
+import {mkdtempSync,readFileSync,writeFileSync} from 'node:fs';import {tmpdir} from 'node:os';import {join} from 'node:path';
+import {setTimeout as delay} from 'node:timers/promises';
+import {GoalBook,type GoalReview,type GoalDraft} from '../src/goals.js';import {MockWorld} from '../src/mock.js';import {Runtime} from '../src/runtime.js';
+import type {Brain,Plan} from '../src/types.js';import {ApiBrain,Budget,selectorPlan,selectorObservation} from '../src/providers.js';import {config} from '../src/config.js';
+const location=()=>join(mkdtempSync(join(tmpdir(),'mc-goals-')),'goals.json');
+const draft=(r:GoalReview,id='food',status:GoalDraft['status']='active'):GoalDraft=>({id,description:'Find food',reason:'Observed inventory and hunger justify checking food',evidenceIds:[r.observationId],status,successCriteria:'Have food available',...(status==='paused'?{pauseReason:'Waiting for another task'}:{})});
+const response=(r:GoalReview):Plan=>({goal:'Inspect possible food sources',preferred:'idle',steps:[],activeGoalId:'food',goalUpdates:[draft(r)]});
+const opts={planMs:30000,actionMs:100,minConfidence:0,reflectionEnabled:false};
+test('goals persist evidence and versions, restored intentions need fresh review',()=>{
+ const file=location(),b=new GoalBook(file,'Alice'),w=new MockWorld(),r=b.review(w.snapshot(),null);b.apply(r,[draft(r)],'food');
+ assert.equal(b.snapshot().activeGoal?.id,'food');const restored=new GoalBook(file,'Alice');assert.equal(restored.snapshot().activeGoal,null);assert.equal(restored.snapshot().goals[0].id,'food');
+ const review=restored.review(w.snapshot(),null);assert.throws(()=>restored.apply(review,[],'food'),/unreviewed/);restored.apply(review,[draft(review)],'food');assert.equal(restored.snapshot().activeGoal?.version,2);
+ const data=JSON.parse(readFileSync(file,'utf8'));assert.ok(data.evidence.some((e:any)=>e.id===r.observationId));assert.equal(data.revisions.length,2);
+});
+test('pause is durable and a new active intention does not erase held work',()=>{
+ const b=new GoalBook(location(),'Alice'),s=new MockWorld().snapshot();let r=b.review(s,null);b.apply(r,[draft(r)],'food');b.pause('Threat requires review');
+ assert.equal(b.snapshot().goals[0].status,'paused');assert.equal(b.snapshot().activeGoal,null);
+ r=b.review(s,null);b.apply(r,[{...draft(r,'shelter'),description:'Seek safe ground'}],'shelter');assert.equal(b.snapshot().goals.length,2);assert.equal(b.snapshot().goals.find(g=>g.id==='food')?.pauseReason,'Threat requires review');
+});
+test('fabricated evidence, two active goals and stale reviews are rejected atomically',()=>{
+ const file=location(),b=new GoalBook(file),s=new MockWorld().snapshot(),r=b.review(s,null);
+ assert.throws(()=>b.apply(r,[{...draft(r),evidenceIds:['invented']}],'food'),/evidence/);assert.equal(b.snapshot().revision,0);
+ assert.throws(()=>b.apply(r,[draft(r),draft(r,'shelter')],'food'),/active/);assert.equal(b.snapshot().goals.length,0);
+ b.apply(r,[draft(r)],'food');assert.throws(()=>b.apply(r,[],null),/stale/);
+});
+test('completion cites current observation and terminal goals cannot silently reopen',()=>{
+ const b=new GoalBook(),s=new MockWorld().snapshot();let r=b.review(s,null);const old=r.observationId;b.apply(r,[draft(r)],'food');r=b.review(s,null);
+ assert.throws(()=>b.apply(r,[{...draft(r,'food','completed'),evidenceIds:[old]}],null),/fresh/);
+ b.apply(r,[draft(r,'food','completed')],null);r=b.review(s,null);assert.throws(()=>b.apply(r,[draft(r)],'food'),/terminal/);
+});
+test('profile mismatch, corrupt storage and concurrent writers preserve evidence',()=>{
+ const file=location(),a=new GoalBook(file,'Alice'),other=new GoalBook(file,'Alice'),s=new MockWorld().snapshot(),ar=a.review(s,null),br=other.review(s,null);a.apply(ar,[draft(ar)],'food');const saved=readFileSync(file,'utf8');
+ assert.throws(()=>new GoalBook(file,'Bob'),/memory/);assert.throws(()=>other.apply(br,[draft(br)],'food'),/stale/);assert.equal(readFileSync(file,'utf8'),saved);
+ writeFileSync(file,'bad json');assert.throws(()=>new GoalBook(file,'Alice'));assert.equal(readFileSync(file,'utf8'),'bad json');
+});
+test('runtime separates operator request and autonomous intention, reconnect rechecks before choosing',async()=>{
+ const goals=new GoalBook(location()),w=new MockWorld();let choose=0,fail=false;const contexts:any[]=[];
+ const brain:Brain={plan:async(_s,_h,_sig,request,c)=>{contexts.push({request,c});if(fail)throw Error('Invalid fixture failure');return response(c!.goalReview!);},choose:async()=>{choose++;return {action:'idle',confidence:1};}};
+ w.execute=async()=> 'Waited';const r=new Runtime(w,brain,{...opts,goals},()=>{});r.setGoal('Cooperate freely without building obligations');await r.tick();await delay(5);
+ assert.equal(r.planning.longTermGoal,'Find food');assert.equal(r.userGoal,'Cooperate freely without building obligations');assert.equal(contexts[0].request,r.userGoal);
+ await r.tick();assert.equal(choose,1);w.state.ready=false;await r.tick();assert.equal(goals.snapshot().goals[0].status,'paused');assert.equal(r.plan.preferred,'idle');
+ fail=true;w.state.ready=true;await r.tick();await delay(5);await r.tick();assert.equal(choose,1);assert.equal(goals.needsReview,true);r.close();
+});
+test('late review after operator change cannot save or reactivate old intentions',async()=>{
+ const goals=new GoalBook(),w=new MockWorld();let resolve!:(p:Plan)=>void;let review!:GoalReview;
+ const brain:Brain={plan:async(_s,_h,_sig,_u,c)=>{review=c!.goalReview!;return new Promise<Plan>(r=>resolve=r);},choose:async()=>({action:'idle',confidence:1})};
+ const r=new Runtime(w,brain,{...opts,goals},()=>{});const pending=r.refreshPlan();r.setGoal('New request');resolve(response(review));await pending;assert.equal(goals.snapshot().goals.length,0);assert.equal(goals.needsReview,true);r.close();
+});
+test('unreviewed goals block ordinary work but hunger safety remains available',async()=>{
+ const goals=new GoalBook(),w=new MockWorld();w.state.food=10;let actions:string[]=[];w.execute=async a=>{actions.push(a);w.state.food=20;return 'ate';};
+ const brain:Brain={plan:async()=>{throw Error('Invalid temporary failure');},choose:async()=>{throw Error('must not choose ordinary work');}};
+ const r=new Runtime(w,brain,{...opts,goals},()=>{});await r.tick();assert.deepEqual(actions,['eat']);assert.equal(goals.needsReview,true);r.close();
+});
+test('planner wire separates background/request/observation/memory and parses goal patches',async()=>{
+ const w=new MockWorld(),goals=new GoalBook(),review=goals.review(w.snapshot(),'Cooperate');const c:any={goalReview:review};
+ const request=(async(_url:any,init:any)=>{const body=JSON.parse(init.body),input=JSON.parse(body.messages.at(-1).content);assert.ok(input.gameContext.description);assert.equal(input.userRequest,'Cooperate');assert.ok(input.memory);assert.equal(input.state.memoryGuidance,undefined);assert.equal(input.planning.goalReview.observationId,review.observationId);return Response.json({choices:[{message:{content:JSON.stringify(response(review))}}],usage:{prompt_tokens:10,completion_tokens:10}});}) as typeof fetch;
+ const brain=new ApiBrain({...config(),llmKey:'fake-test-key'},new Budget(2,2),request);const p=await brain.plan(w.snapshot(),[],new AbortController().signal,'Cooperate',c);assert.equal(p.activeGoalId,'food');
+});
+test('fast selector input excludes goal history and recipe catalog but keeps current execution data',()=>{
+ const s=new MockWorld().snapshot();s.places=[{name:'stone',position:{x:4,y:64,z:4},lastSeen:1}];s.recipeBook.unlocked=['some_recipe'];const view:any=selectorObservation(s);assert.equal(view.places,undefined);assert.equal(view.recipeBook,undefined);assert.equal(view.health,20);
+ const r=new GoalBook().review(s,null),p:any=selectorPlan({...response(r),mine:{position:{x:1,y:64,z:0},expected:'oak_log'}});assert.equal(p.goalUpdates,undefined);assert.equal(p.steps,undefined);assert.equal(p.activeGoalId,'food');assert.equal(p.mine.expected,'oak_log');
+});
+test('no active intention offers only waiting, not unrelated construction',async()=>{
+ const w=new MockWorld(),goals=new GoalBook();w.state.canPlaceTable=true;const offered:string[][]=[];
+ const brain:Brain={plan:async()=>({goal:'No useful task yet',preferred:'idle',goalUpdates:[],activeGoalId:null}),choose:async(_s,_p,opts)=>{offered.push(opts);return {action:'idle',confidence:1};}};
+ w.execute=async()=> 'wait';const r=new Runtime(w,brain,{...opts,goals},()=>{});await r.tick();await delay(5);await r.tick();assert.deepEqual(offered,[['idle']]);r.close();
+});
+test('fresh successful review can resume saved intentions without replaying old action parameters',async()=>{
+ const file=location(),old=new GoalBook(file),w=new MockWorld();const initial=old.review(w.snapshot(),null);old.apply(initial,[draft(initial)],'food');
+ const goals=new GoalBook(file);let selected=0;const brain:Brain={plan:async(_s,_h,_sig,_u,c)=>response(c!.goalReview!),choose:async(_s,p)=>{assert.equal(p.activeGoalId,'food');assert.equal(p.mine,undefined);selected++;return {action:'idle',confidence:1};}};
+ w.execute=async()=> 'wait';const r=new Runtime(w,brain,{...opts,goals},()=>{});await r.tick();await delay(5);assert.equal(goals.needsReview,false);await r.tick();assert.equal(selected,1);assert.equal(r.userGoal,null);r.close();
+});
+test('accounting drain closes gameplay without aborting pending model usage or applying late plans',async()=>{
+ const goals=new GoalBook(),w=new MockWorld();let resolve!:(p:Plan)=>void;let signal!:AbortSignal;let review!:GoalReview;
+ const brain:Brain={plan:async(_s,_h,s,_u,c)=>{signal=s;review=c!.goalReview!;return new Promise<Plan>(r=>resolve=r);},choose:async()=>({action:'idle',confidence:1})};
+ const r=new Runtime(w,brain,{...opts,goals},()=>{});const pending=r.refreshPlan();r.close(true);assert.equal(w.state.ready,false);assert.equal(signal.aborted,false);resolve(response(review));await pending;assert.equal(goals.snapshot().goals.length,0);
+});
+
+test('invalid goal updates return feedback with fresh evidence on a bounded retry',async()=>{
+ const g=new GoalBook(),w=new MockWorld();let calls=0,old='';const seen:any[]=[];
+ const brain:Brain={plan:async(_s,_h,_sig,_u,c)=>{seen.push(c);calls++;if(calls===1){old=c!.goalReview!.observationId;const p=response(c!.goalReview!);p.goalUpdates![0].evidenceIds=['old-id'];return p;}return response(c!.goalReview!);},choose:async()=>({action:'idle',confidence:1})};
+ const r=new Runtime(w,brain,{...opts,goals:g},()=>{});await r.refreshPlan();assert.equal(g.snapshot().goals.length,0);await r.refreshPlan(Date.now()+1100);assert.equal(calls,2);assert.match(seen[1].plannerFeedback,/evidence/);assert.notEqual(seen[1].goalReview.observationId,old);assert.equal(g.snapshot().activeGoal?.id,'food');assert.equal(r.planning.plannerFeedback,undefined);r.close();
+});
+
+test('valid reconnect goal review survives an unavailable first step and JEV can still observe',async()=>{
+ const b=new GoalBook(),w=new MockWorld();w.state.vision!.blocks=[];let choices=0;
+ const brain:Brain={plan:async(_s,_h,_sig,_user,c)=>({...response(c!.goalReview!),preferred:'mine',mine:{position:{x:1,y:64,z:0},expected:'oak_log'}}),choose:async(_s,_p,options)=>{assert.ok(!options.includes('mine'));assert.ok(options.includes('look'));choices++;return {action:'look',confidence:.01};}};
+ const r=new Runtime(w,brain,{...opts,actionMs:1000,goals:b},()=>{}) as any;r.lastReady=true;
+ await r.refreshPlan();assert.equal(b.needsReview,false);assert.equal(b.snapshot().activeGoal?.id,'food');assert.match(r.planning.plannerFeedback,/Invalid first action/);
+ await r.tick();assert.equal(choices,1);assert.equal(r.planning.recentActions.at(-1).decision.action,'look');r.close();
+});
+
+test('terminal reaffirmation preserves original history while applying a new goal',()=>{
+ const file=location(),b=new GoalBook(file),s=new MockWorld().snapshot();let r=b.review(s,null);b.apply(r,[draft(r,'food','completed')],null);
+ const old=b.snapshot().goals[0],saved=JSON.parse(readFileSync(file,'utf8'));r=b.review(s,null);
+ b.apply(r,[{...draft(r,'food','completed'),reason:'Fresh review with a different explanation'},draft(r,'explore')],'explore');
+ assert.deepEqual(b.snapshot().goals.find(g=>g.id==='food'),old);assert.equal(b.snapshot().activeGoal?.id,'explore');
+ const next=JSON.parse(readFileSync(file,'utf8'));assert.equal(next.revisions.length,saved.revisions.length+1);assert.deepEqual(next.revisions[0],saved.revisions[0]);
+ assert.deepEqual(new GoalBook(file).snapshot().goals,JSON.parse(JSON.stringify(b.snapshot().goals)));
+});
+test('terminal mutation rejects the entire transaction and invalid evidence cannot hide in a no-op',()=>{
+ const file=location(),b=new GoalBook(file),s=new MockWorld().snapshot();let r=b.review(s,null);b.apply(r,[draft(r,'food','completed')],null);r=b.review(s,null);
+ const saved=readFileSync(file,'utf8'),before=b.snapshot();
+ for(const change of [{status:'active'},{status:'abandoned'},{description:'Different intention'},{successCriteria:'Different criterion'},{evidenceIds:['invented']}]){
+  assert.throws(()=>b.apply(r,[draft(r,'explore'),{...draft(r,'food','completed'),...change}], 'explore'),/Invalid/);
+  assert.deepEqual(b.snapshot(),before);assert.equal(readFileSync(file,'utf8'),saved);
+ }
+});
+test('abandoned reaffirmation stays abandoned and cannot be selected active',()=>{
+ const b=new GoalBook(),s=new MockWorld().snapshot();let r=b.review(s,null);b.apply(r,[draft(r,'food','abandoned')],null);const old=b.snapshot().goals[0];r=b.review(s,null);
+ assert.throws(()=>b.apply(r,[draft(r,'food','abandoned')],'food'),/active/);
+ b.apply(r,[draft(r,'food','abandoned')],null);assert.deepEqual(b.snapshot().goals[0],old);
+});
+test('independent long loop retains diagnostic feedback for retry and clears it on success',async()=>{
+ const w=new MockWorld(),goals=new GoalBook(),contexts:any[]=[],logs:any[]=[];let calls=0;
+ const brain:Brain={plan:async()=>({goal:'Observe',preferred:'idle'}),choose:async()=>({action:'idle',confidence:1}),reviewGoals:async(_s,c)=>{
+  contexts.push(c);calls++;if(calls===1)throw Error('Invalid terminal goal revision for food; create a new goal');
+  return {goalUpdates:[draft(c.goalReview!)],activeGoalId:'food'};
+ }};
+ const rt:any=new Runtime(w,brain,{...opts,goals,recovery:new RecoveryMemory()},(e,d)=>logs.push({e,d}));const flush=()=>new Promise(r=>setImmediate(r));
+ rt.refreshLong(w.snapshot(),Date.now());await flush();assert.match(rt.planning.longPlannerFeedback,/food/);assert.match(logs.find(x=>x.e==='long_planner_error').d.reason,/terminal/);
+ rt.refreshLong(w.snapshot(),Date.now()+1000);await flush();assert.equal(calls,1);
+ rt.refreshLong(w.snapshot(),Date.now()+31000);await flush();assert.match(contexts[1].longPlannerFeedback,/food/);assert.equal(rt.planning.longPlannerFeedback,undefined);assert.equal(goals.snapshot().activeGoal?.id,'food');rt.close();
+});
+test('long review wire includes scoped feedback and explicit patch contract',async()=>{
+ const w=new MockWorld(),book=new GoalBook(),review=book.review(w.snapshot(),null);
+ const request=(async(_url:any,init:any)=>{const body=JSON.parse(init.body),input=JSON.parse(body.messages.at(-1).content);
+ assert.equal(input.longPlannerFeedback,'Invalid terminal goal revision for food');assert.match(body.messages[0].content,/only new or changed goals/);
+ return Response.json({choices:[{message:{content:JSON.stringify({goalUpdates:[draft(review)],activeGoalId:'food'})}}],usage:{prompt_tokens:10,completion_tokens:10}});
+ }) as typeof fetch;
+ const b=new ApiBrain({...config(),llmKey:'fake-test-key'},new Budget(2,2),request);
+ await b.reviewGoals(w.snapshot(),{goalReview:review,longPlannerFeedback:'Invalid terminal goal revision for food'} as any,new AbortController().signal);
+});
+test('late long review failure does not contaminate a new operator request',async()=>{
+ const w=new MockWorld(),goals=new GoalBook();let reject!:(e:Error)=>void;
+ const b:Brain={plan:async()=>({goal:'Observe',preferred:'idle'}),choose:async()=>({action:'idle',confidence:1}),reviewGoals:async()=>new Promise((_r,j)=>reject=j)};
+ const rt:any=new Runtime(w,b,{...opts,goals,recovery:new RecoveryMemory()},()=>{});rt.refreshLong(w.snapshot(),Date.now());rt.setGoal('New request');reject(Error('Invalid old review'));
+ await new Promise(r=>setImmediate(r));assert.equal(rt.planning.longPlannerFeedback,undefined);rt.close();
+});

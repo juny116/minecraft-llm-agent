@@ -1,0 +1,20 @@
+import test from 'node:test';import assert from 'node:assert/strict';import {pilotStopReason} from '../src/pilot.js';
+const base={elapsedMs:0,maxMs:300000,states:[{ready:true,health:20},{ready:true,health:20}],budgetExhausted:false,noProgressMs:0,consecutiveFailures:0};
+test('pilot hard bounds time and budget',()=>{assert.equal(pilotStopReason(base),null);assert.equal(pilotStopReason({...base,elapsedMs:300000,maxMs:600000}),'time_limit');assert.equal(pilotStopReason({...base,budgetExhausted:true}),'budget_or_usage_limit');});
+test('pilot stops for either bot death, disconnect or low health',()=>{assert.equal(pilotStopReason({...base,states:[base.states[0],{ready:false,health:0}]}),'death');assert.equal(pilotStopReason({...base,states:[{ready:false,health:20}]}),'disconnected');assert.equal(pilotStopReason({...base,states:[{ready:true,health:6}]}),'low_health');});
+test('pilot stops repeated failures and prolonged no progress',()=>{assert.equal(pilotStopReason({...base,consecutiveFailures:4}),'repeated_failure');assert.equal(pilotStopReason({...base,noProgressMs:120000}),'no_progress');});
+test("explicit extended pilot keeps a separate capped authorization",()=>{assert.equal(pilotStopReason({...base,elapsedMs:300000,maxMs:900000,authorizedMaxMs:900000}),null);assert.equal(pilotStopReason({...base,elapsedMs:900000,maxMs:900000,authorizedMaxMs:900000}),"time_limit");assert.equal(pilotStopReason({...base,elapsedMs:1800000,maxMs:3600000,authorizedMaxMs:3600000}),"time_limit");});
+
+test('one agents progress cannot mask another agents prolonged stall',()=>{
+ const state={elapsedMs:100000,maxMs:300000,states:[{ready:true,health:20},{ready:true,health:20}],budgetExhausted:false,noProgressMs:0,consecutiveFailures:0,agentNoProgressMs:[0,180000]};
+ assert.equal(pilotStopReason(state),'agent_no_progress');assert.equal(pilotStopReason({...state,agentNoProgressMs:[0,90000]}),null);
+});
+
+test('explicit stall observation retains time and health stops without forcing behavior',()=>{
+ const s={elapsedMs:1000,maxMs:300000,states:[{ready:true,health:20}],budgetExhausted:false,noProgressMs:200000,consecutiveFailures:10,agentNoProgressMs:[200000]};
+ assert.equal(pilotStopReason(s),'repeated_failure');
+ assert.equal(pilotStopReason({...s,observeStalls:true}),null);
+ assert.equal(pilotStopReason({...s,observeStalls:true,elapsedMs:300000}),'time_limit');
+ assert.equal(pilotStopReason({...s,observeStalls:true,budgetExhausted:true}),'budget_or_usage_limit');
+ assert.equal(pilotStopReason({...s,observeStalls:true,states:[{ready:true,health:5}]}),'low_health');
+});
